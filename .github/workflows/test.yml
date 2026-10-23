@@ -7,7 +7,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: test-${{ github.ref }}
+  # Separate group from legacy full-suite runs so they cannot block this gate.
+  group: test-windows-fast-${{ github.ref }}
   # This personal fork prefers the newest commit over stale, long-running tests.
   cancel-in-progress: true
 
