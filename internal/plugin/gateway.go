@@ -178,7 +178,7 @@ func GatewayBegin(ctx context.Context, body []byte, info GatewayContext) *Gatewa
 		Token string          `json:"token"`
 		Body  json.RawMessage `json:"body"`
 	}
-	err = h.call(start, "gatewayRequest", map[string]any{"operation": "begin", "body":      json.RawMessage(body), "context": info}, &out)
+	err = h.call(start, "gatewayRequest", map[string]any{"operation": "begin", "body": json.RawMessage(body), "context": info}, &out)
 	if err != nil || out.ID == "" || out.Token == "" || len(out.Body) == 0 || out.Body[0] != '{' || !json.Valid(out.Body) {
 		return nil
 	}
@@ -267,7 +267,7 @@ func GatewayPrepared(ctx context.Context, body []byte, info PreparedContext) []b
 	}
 	h, err := getLocked(start)
 	hostMu.Unlock()
-	if err != nil || start.Err() != nil {
+	if err != nil || start.Err() != nil || !h.prepared {
 		return body
 	}
 	var out json.RawMessage

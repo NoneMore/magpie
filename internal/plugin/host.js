@@ -2618,7 +2618,7 @@ const handlers = {
     prefer = p.prefer ?? {}
     chosen = p.options ?? {}
     await loadPlugins(p.plugins ?? [])
-    return { plugins: loaded.map(withProviders) }
+    return { plugins: loaded.map(withProviders), prepared: gatewayHooks.some((h) => typeof h.onPreparedRequest === "function") }
   },
   providers: (p) => providers(p ?? {}),
   prompt: async (p) => ({ prompt: await nextPrompt(p.provider, p.method, p.inputs ?? {}) }),

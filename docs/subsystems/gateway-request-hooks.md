@@ -70,8 +70,11 @@ bytes are forwarded immediately; a bounded copy is consolidated into that
 protocol's response shape only for this callback, through the same decoder,
 collector and renderer the gateway translates with (a Responses stream's
 `response.completed` response is the reply as it is). The callback cannot rewrite
-client output. `ctx.request` contains the accepted request, `ctx.success` reports
-completion, and the same per-hook `ctx.state` links recall with capture.
+client output. `ctx.request` contains the accepted pre-routing request, not
+the final provider-adapted wire body. `ctx.success` reports completion, and
+the same per-hook `ctx.state` links recall with capture. `onResponse` is
+paired with `onRequest`: exporting only `onPreparedRequest` does not register
+a response callback.
 
 Notification is fire-and-forget, with a fresh timeout signal independent of the
 finished HTTP request. It never waits for an observer's network operation before
@@ -127,7 +130,7 @@ not affected.
 
 No extra configuration is required: install and enable a plugin which
 exports the callback. All enabled plugins exporting it run in normal
-plugin order. As with the regular hook, the callback may be async; it
+plugin order. A host with no such callback skips the prepared-body RPC. As with the regular hook, the callback may be async; it
 returns an object to replace the current request body or `undefined`
 to leave it alone. Each plugin receives
 `{provider, protocol, model, options, signal}` in `ctx`.

@@ -505,6 +505,22 @@ func TestGatewayHookNamesApartFromMiddleware(t *testing.T) {
 	}
 }
 
+func TestPreparedHookSkippedWithoutCallback(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onRequest(body) { return body }`)
+	h, err := get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.prepared {
+		t.Fatal("request-only host advertised a prepared hook")
+	}
+	body := []byte(`{"model":"gpt-5.5","input":[]}`)
+	if got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"}); !reflect.DeepEqual(got, body) {
+		t.Fatalf("request-only host changed prepared request: %s", got)
+	}
+}
+
 func TestPreparedHookAppliesAfterProviderAdapter(t *testing.T) {
 	sandbox(t)
 	gatewayFixture(t, `export function onPreparedRequest(body, ctx) {
@@ -512,6 +528,13 @@ func TestPreparedHookAppliesAfterProviderAdapter(t *testing.T) {
 		return {...body, instructions:"Own instructions", input:body.input.slice(1), tool_choice:"none"}
 	}`)
 	body := []byte(`{"model":"gpt-5.5","instructions":"Codex instructions","tool_choice":"auto","input":[{"role":"developer","content":"Own instructions"},{"role":"user","content":"hello"}]}`)
+	h, err := get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.prepared {
+		t.Fatal("prepared hook was not advertised by host")
+	}
 	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Protocol: "responses", Model: "gpt-5.5"})
 	var got struct {
 		Instructions string            `json:"instructions"`
