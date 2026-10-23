@@ -51,6 +51,21 @@ func TestPreparedCodexScopeAndCacheIsolation(t *testing.T) {
 	if changed["prompt_cache_key"] == "the-thread" {
 		t.Fatalf("cache key was not isolated: %s", got)
 	}
+	// The same instructions with the developer item retained must not
+	// share a cache namespace with the version that drops that item.
+	var original map[string]any
+	_ = json.Unmarshal(before, &original)
+	m["input"] = original["input"]
+	withDeveloper, _ := json.Marshal(m)
+	kept, accepted := safePreparedCodexChange(before, withDeveloper, origin)
+	if !accepted {
+		t.Fatal("changing only instructions was refused")
+	}
+	var keptBody map[string]any
+	_ = json.Unmarshal(kept, &keptBody)
+	if keptBody["prompt_cache_key"] == changed["prompt_cache_key"] {
+		t.Fatal("different prompt prefixes reused a cache namespace")
+	}
 	got2, ok := safePreparedCodexChange(before, after, origin)
 	if !ok || !reflect.DeepEqual(got, got2) {
 		t.Fatal("cache key must be stable across attempts")

@@ -117,7 +117,13 @@ func safePreparedCodexChange(before, after []byte, origin codexPreparedOrigin) (
 	if changed, err = decodePrepared(after); err != nil {
 		return before, false
 	}
-	seed := sha256.Sum256([]byte("magpie-prepared-v1\x00" + key + "\x00" + value))
+	// A removed synthetic developer message changes the prompt prefix too.
+	// Partition that case from a hook that changes only instructions.
+	mode := "keep"
+	if !reflect.DeepEqual(oldInput, nextInput) {
+		mode = "drop"
+	}
+	seed := sha256.Sum256([]byte("magpie-prepared-v1\x00" + key + "\x00" + value + "\x00" + mode))
 	h := hex.EncodeToString(seed[:])
 	changed["prompt_cache_key"] = h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 	out, err := json.Marshal(changed)
