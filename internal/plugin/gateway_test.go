@@ -558,3 +558,31 @@ func TestPreparedHookFailureKeepsRequest(t *testing.T) {
 		t.Fatalf("failed hook changed final body: %s", out)
 	}
 }
+
+func TestPreparedHookUndefinedPreservesJSON(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest() {}`)
+	// A JavaScript JSON round-trip would round this integer even for a no-op.
+	body := []byte(`{ "model":"gpt-5.5", "metadata":{"id":9007199254740993} }`)
+	if got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Model: "gpt-5.5"}); !reflect.DeepEqual(got, body) {
+		t.Fatalf("undefined hook changed request: %s", got)
+	}
+}
+
+func TestPreparedHookChainSeesCurrentModel(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(body) { return {...body, model:"gpt-5.6"} }`)
+	gatewayFixture(t, `export function onPreparedRequest(body, ctx) { return {...body, seenModel:ctx.model} }`)
+	body := []byte(`{"model":"gpt-5.5","input":[]}`)
+	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Model: "gpt-5.5"})
+	var got struct {
+		Model     string `json:"model"`
+		SeenModel string `json:"seenModel"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "gpt-5.6" || got.SeenModel != got.Model {
+		t.Fatalf("second hook observed a stale model: %s", out)
+	}
+}

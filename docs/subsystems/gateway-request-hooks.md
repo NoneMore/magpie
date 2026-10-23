@@ -133,7 +133,8 @@ exports the callback. All enabled plugins exporting it run in normal
 plugin order. A host with no such callback skips the prepared-body RPC. As with the regular hook, the callback may be async; it
 returns an object to replace the current request body or `undefined`
 to leave it alone. Each plugin receives
-`{provider, protocol, model, options, signal}` in `ctx`.
+`{provider, protocol, model, options, signal}` in `ctx`. For each plugin,
+`ctx.model` reflects the current `body.model`, including earlier hook changes.
 Errors, timeouts and non-JSON-object results keep the latest accepted
 body instead. No field-level restrictions or prompt strategy are imposed.
 

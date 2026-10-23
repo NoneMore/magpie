@@ -1391,19 +1391,21 @@ async function gatewayPrepared(p, signal) {
   if (!hooks.length) return null
   const total = AbortSignal.any([signal, AbortSignal.timeout(gatewayBudget())])
   let body = p.body
+  let changed = false
   for (const h of hooks) {
     if (total.aborted) break
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
     const ownSignal = AbortSignal.any([total, ctl.signal])
     try {
-      const ctx = { ...p.context, options: structuredClone(h.options), signal: ownSignal }
+      const ctx = { ...p.context, model: typeof body.model === "string" ? body.model : "", options: structuredClone(h.options), signal: ownSignal }
       const result = await bounded(Promise.resolve().then(() => h.onPreparedRequest(structuredClone(body), ctx)), ownSignal)
       if (result === undefined) continue
       if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("invalid prepared body")
       const next = JSON.parse(JSON.stringify(result))
       if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("invalid serialized body")
       body = next
+      changed = true
     } catch {
       if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: prepared request hook failed or timed out; keeping request` })
     } finally {
@@ -1411,7 +1413,7 @@ async function gatewayPrepared(p, signal) {
       ctl.abort()
     }
   }
-  return body
+  return changed ? body : null
 }
 
 async function gatewayRequest(p, signal) {
