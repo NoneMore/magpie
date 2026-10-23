@@ -11,10 +11,10 @@ func init() {
 	pluginrt.Register(pluginrt.Manifest{
 		ID: "fingerprint", API: "^1",
 		Requires: []string{"window", "gateway"},
-		Name: "Model fingerprint",
-		Sub: "Identify the closest reference models using three Magpie Gateway challenges",
-		Parts: []pluginrt.Part{{Slot: "nav.page", Key: "fingerprint"}},
-		Client: []string{"i18n.js", "fingerprint.css", "client.js"},
+		Name:     "Model fingerprint",
+		Sub:      "Identify the closest reference models using three Magpie Gateway challenges",
+		Parts:    []pluginrt.Part{{Slot: "nav.page", Key: "fingerprint"}},
+		Client:   []string{"i18n.js", "fingerprint.css", "client.js"},
 		Apply: func(ctx *pluginrt.Ctx) error {
 			ctx.OnDispose(fingerprint.StopAll)
 			return nil
