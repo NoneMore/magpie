@@ -51,11 +51,10 @@ magpie.plugin("fingerprint", (ctx) => {
       option.textContent = id;
       select.append(option);
     }
-    if (list.includes(chosen)) select.value = chosen;
-    else if (preferredProvider) {
-      const option = list.find(id => id.startsWith(preferredProvider + "/"));
-      if (option) select.value = option;
-    }
+    const preferred = preferredProvider && list.find(id => id.startsWith(preferredProvider + "/"));
+    if (preferred) select.value = preferred;
+    else if (list.includes(chosen)) select.value = chosen;
+    preferredProvider = "";
     runButton.disabled = busy || !select.value;
   }
   function jobRow(job) {
