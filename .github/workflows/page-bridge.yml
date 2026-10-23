@@ -1,0 +1,198 @@
+name: Page Bridge CI
+
+on:
+  push:
+    branches:
+      - feat/lm-detector-page-bridge
+    paths:
+      - .github/workflows/page-bridge.yml
+      - internal/gui/pluginpage.go
+      - internal/gui/pluginpage_tool_test.go
+      - internal/gui/pagebridge.js
+      - internal/gui/assets/pluginpages.js
+      - internal/gui/assets/plugins.js
+      - internal/plugin/page.go
+      - internal/plugin/tools.go
+      - go.mod
+      - go.sum
+  pull_request:
+    paths:
+      - .github/workflows/page-bridge.yml
+      - internal/gui/pluginpage.go
+      - internal/gui/pluginpage_tool_test.go
+      - internal/gui/pagebridge.js
+      - internal/gui/assets/pluginpages.js
+      - internal/gui/assets/plugins.js
+      - internal/plugin/page.go
+      - internal/plugin/tools.go
+      - go.mod
+      - go.sum
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: page-bridge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: Go tests, JS checks, Linux CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The fork declares Go 1.26.8 in go.mod. No local Go installation
+      # is used, and this tests the committed PR code, not the default branch.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Print Go version
+        run: |
+          go version
+          go env GOTOOLCHAIN
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          bad=$(gofmt -l internal/plugin/page.go internal/gui/pluginpage.go internal/gui/pluginpage_tool_test.go)
+          if [ -n "$bad" ]; then
+            printf 'Files need gofmt:\n%s\n' "$bad"
+            exit 1
+          fi
+
+      - name: Check Page bridge JavaScript syntax
+        run: |
+          node --check internal/gui/pagebridge.js
+          node --check internal/gui/assets/pluginpages.js
+          node --check internal/gui/assets/plugins.js
+
+      # nogui builds without GTK/WebKit headers. The main Test workflow
+      # separately validates native GUI compilation on Linux/macOS/Windows.
+      - name: Vet plugin and GUI packages
+        run: go vet -tags nogui ./internal/plugin/... ./internal/gui/...
+
+      - name: Test plugin and GUI packages
+        run: go test -tags nogui -count=1 -timeout 12m ./internal/plugin/... ./internal/gui/...
+
+      - name: Build terminal-only Magpie
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -tags nogui -trimpath -o dist/magpie-linux-amd64 .
+          test -s dist/magpie-linux-amd64
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-page-bridge-linux-amd64-cli
+          path: dist/magpie-linux-amd64
+          if-no-files-found: error
+          retention-days: 7
+
+  # This is the Windows desktop program, not the 'nogui' terminal build.
+  # Magpie's Makefile uses go-winres to embed the Windows icon/manifest and
+  # links as windowsgui. WebView2 requires no CGO, so both Windows arches
+  # can be cross-compiled by GitHub's Linux runner with Go from go.mod.
+  windows-desktop:
+    name: Windows desktop GUI + CLI (x64 / ARM64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Windows GUI with icon and manifest
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go version
+          make release-windows VERSION=0.0.0
+          test -s dist/magpie-windows-amd64.exe
+          test -s dist/magpie-windows-arm64.exe
+
+      - name: Build Windows CLI (both architectures)
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=windows GOARCH="$arch" go build -tags nogui -trimpath \
+              -o "dist/magpie-cli-windows-$arch.exe" .
+            test -s "dist/magpie-cli-windows-$arch.exe"
+          done
+
+      - name: Check binary formats and checksums
+        shell: bash
+        run: |
+          file dist/*windows*.exe
+          file dist/magpie-windows-amd64.exe | grep 'PE32+ executable'
+          file dist/magpie-windows-arm64.exe | grep 'PE32+ executable'
+          (cd dist && sha256sum magpie-*windows*.exe > SHA256SUMS-windows.txt)
+
+      - name: Upload Windows x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-page-bridge-windows-amd64
+          path: |
+            dist/magpie-windows-amd64.exe
+            dist/magpie-cli-windows-amd64.exe
+            dist/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows ARM64
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-page-bridge-windows-arm64
+          path: |
+            dist/magpie-windows-arm64.exe
+            dist/magpie-cli-windows-arm64.exe
+            dist/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # Smoke-test the uploaded x64 executable *on Windows*, not only via
+  # a Linux cross-compile. The GUI cannot be launched reliably in headless
+  # CI, so that part is verified by building with Windows resources.
+  windows-smoke:
+    name: Windows x64 native startup smoke test
+    needs: windows-desktop
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: magpie-page-bridge-windows-amd64
+          path: build
+
+      - name: Check native Windows command-line startup
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'build/magpie-windows-amd64.exe')) { throw 'GUI binary missing' }
+          if (!(Test-Path 'build/magpie-cli-windows-amd64.exe')) { throw 'CLI binary missing' }
+          $result = & 'build/magpie-cli-windows-amd64.exe' version
+          if ($LASTEXITCODE -ne 0 -or "$result" -notmatch '^magpie ') {
+            throw "Native Windows CLI startup failed: $result"
+          }
+          Write-Output $result

@@ -74,7 +74,7 @@ const maxActions = 8
 
 // PageReads are the reads a plugin's page can be granted, each in
 // magpie.permissions. None of them carries a secret.
-var PageReads = []string{"usage:summary", "providers:list"}
+var PageReads = []string{"usage:summary", "providers:list", "tool:run"}
 
 // PanelSlots are the places in magpie's own pages a plugin's panel can
 // go: under the Agents page's list, at the end of the Usage page, on
