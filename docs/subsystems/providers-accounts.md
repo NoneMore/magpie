@@ -235,6 +235,28 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
 - A usage cap is kept per account (`AccountCaps`, 1–99) and, beside it, per window (`AccountWindowCaps`, by the account and the window's `capId`, its name in lower case: `WindowCapID`). A window's own share wins over the account's; 100 is no cap on that window. `CapsOf` gives both (`WindowCaps`), `CapHeld` and `capReached` judge each window by its own, and `SetWindowCap` (GUI `provider/windowcap`, `magpie provider account-cap <id> <account> --window <name>`) sets one. A config without window caps reads as before.
 - A window whose reset time has passed has started again, whatever share it was read at (`resetPassed`). That holds for a reading kept from before (`AsOf`) and for a fresh one: Claude Code's `/usage` gives a reset to the minute and can lag it, so a run just after a reset can still say 100% with that reset. `claudeWindows` hands such a window back empty on every path, and `usedPast`, `usedUp`, `BackAt` and `capReached` leave it out when they judge an account spent, for Codex, Claude Code and `magpie quota wait` alike. A card can still show a kept reading as it was read (`reported`, for a Claude card while `/usage` is unavailable); that changes what it shows, never which account is used. A reset `/usage` gives as a time alone ("resets 3pm") can be read as its next one, a day on (`claudeResetTime`), and is then not seen as passed here.
 
+### Personal fork: Codex caller-owned instructions
+
+For the **built-in ChatGPT/Codex subscription adapter only**, setting
+`MAGPIE_CODEX_CALLER_PROMPT=1` in the magpie process environment opts in to
+using the client's non-blank top-level `instructions` in place of Codex's
+native prompt. Set it before starting magpie (including when using the GUI);
+unset it or set anything other than `1` to keep the unchanged default:
+Codex's native instructions with the caller's instructions added as an
+initial developer message. With no caller instructions, the native prompt
+remains, even when the opt-in is enabled. Independent developer items in
+`input`, tools and the rest of `codexBody()` are unaffected.
+
+Under the caller policy, `prompt_cache_key` is deterministically
+namespaced into a separate session key, including a key provided by the
+client. Codex's signed `session-id` and `thread-id` headers use that
+new value. Each policy's cache stays separate, but do not switch policies
+during an active conversation. This is not a global system-prompt setting
+and does not change Claude, other providers, plugins or the native Codex
+backend passthrough. It is intentionally unsupported by upstream: changing
+Codex subscription instructions may be refused and may carry account risks.
+No subscription backend acceptance has been verified.
+
 ## Verification
 
 ```sh
