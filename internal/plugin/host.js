@@ -1224,7 +1224,7 @@ async function loadPlugins(list) {
       let gateway
       if (p.gateway) {
         gateway = await import(pathToFileURL(p.gateway).href)
-        if (typeof gateway.onRequest !== "function") throw new Error("magpie.hooks exports no onRequest")
+        if (typeof gateway.onRequest !== "function" && typeof gateway.onPreparedRequest !== "function") throw new Error("magpie.hooks exports neither onRequest nor onPreparedRequest")
       }
       let fns = []
       // A gateway-only package needs no OpenCode entry. Mixed packages
@@ -1238,7 +1238,7 @@ async function loadPlugins(list) {
       if (fns.length === 0 && !gateway) throw new Error("exports no OpenCode plugin function")
       for (const fn of fns) hooks.push({ spec: p.spec, target: p.target, hooks: (await fn(input, p.options)) ?? {} })
       if (gateway) gatewayHooks.push({ spec: p.spec, options: p.options ?? {}, onRequest: gateway.onRequest,
-        onResponse: gateway.onResponse,
+        onResponse: gateway.onResponse, onPreparedRequest: gateway.onPreparedRequest,
         state: { calls: 0, failures: 0, totalMillis: 0, lastOutcome: "idle", lastBytes: 0 } })
       if (!isPi) loaded.push({ spec: p.spec })
     } catch (e) {
@@ -1289,6 +1289,7 @@ function closeGateway(run) {
 }
 
 async function gatewayBegin(p, signal) {
+  if (!gatewayHooks.some((h) => typeof h.onRequest === "function")) return null
   if (gatewayRuns.size >= GATEWAY_RUN_LIMIT) return null
   const run = { id: randomUUID(), token: randomUUID(), plugins: [], controller: new AbortController(), closed: false, finished: false }
   gatewayRuns.set(run.id, run)
@@ -1299,6 +1300,7 @@ async function gatewayBegin(p, signal) {
   const total = AbortSignal.any([signal, run.controller.signal, AbortSignal.timeout(gatewayBudget())])
   for (const h of gatewayHooks) {
     if (total.aborted) break
+    if (typeof h.onRequest !== "function") continue
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
     const ownSignal = AbortSignal.any([total, ctl.signal])
@@ -1382,7 +1384,32 @@ async function gatewayFinish(run, p, signal) {
   return null
 }
 
+// Only the Go gateway may authorize the selected plugin, and it validates the
+// resulting body. Other plugins do not see this privileged request.
+async function gatewayPrepared(p, signal) {
+  const h = gatewayHooks.find((x) => x.spec === p.spec && typeof x.onPreparedRequest === "function")
+  if (!h) return null
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
+  const ownSignal = AbortSignal.any([signal, ctl.signal])
+  try {
+    const ctx = { ...p.context, options: structuredClone(h.options), signal: ownSignal }
+    const result = await bounded(Promise.resolve().then(() => h.onPreparedRequest(structuredClone(p.body), ctx)), ownSignal)
+    if (result === undefined) return p.body
+    if (!result || typeof result !== "object" || Array.isArray(result)) return null
+    const next = JSON.parse(JSON.stringify(result))
+    return next && typeof next === "object" && !Array.isArray(next) ? next : null
+  } catch {
+    if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: prepared request hook failed; keeping original request` })
+    return null
+  } finally {
+    clearTimeout(timer)
+    ctl.abort()
+  }
+}
+
 async function gatewayRequest(p, signal) {
+  if (p.operation === "prepared") return gatewayPrepared(p, signal)
   if (p.operation === "begin") return gatewayBegin(p, signal)
   const run = gatewayRuns.get(p.id)
   if (!run || run.closed || run.token !== p.token) return null

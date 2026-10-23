@@ -504,3 +504,26 @@ func TestGatewayHookNamesApartFromMiddleware(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayPreparedRequiresExactExplicitTrust(t *testing.T) {
+	sandbox(t)
+	spec := gatewayFixture(t, `export function onPreparedRequest(body, ctx) {
+		if (ctx.provider !== "codex") return
+		return {...body, instructions:"plugin"}
+	}`)
+	body := []byte(`{"model":"gpt-5.5","instructions":"Codex","input":[]}`)
+	info := PreparedContext{Provider:"codex", Protocol:"responses", Model:"gpt-5.5"}
+	if got := GatewayPrepared(t.Context(), body, info); string(got) != string(body) {
+		t.Fatalf("prepared hook ran without trust: %s", got)
+	}
+	t.Setenv("MAGPIE_PREPARED_HOOK_PLUGIN", "wrong-plugin")
+	if got := GatewayPrepared(t.Context(), body, info); string(got) != string(body) {
+		t.Fatalf("untrusted plugin ran: %s", got)
+	}
+	t.Setenv("MAGPIE_PREPARED_HOOK_PLUGIN", spec)
+	got := GatewayPrepared(t.Context(), body, info)
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil || m["instructions"] != "plugin" {
+		t.Fatalf("trusted prepared hook did not run: %s (%v)", got, err)
+	}
+}

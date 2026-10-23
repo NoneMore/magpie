@@ -111,3 +111,54 @@ go test -race -tags nogui ./internal/plugin ./internal/gateway -run '^TestGatewa
 Service deployment, automatic installation and gateway-owned tool loops are
 outside this contract. A concrete companion integration is PowerContext recall
 via `/v1/context/prepare` and conversation capture via `/v1/sources/content`.
+
+
+## Privileged prepared Codex request hook (NoneMore fork)
+
+This fork supports an **explicitly authorized** `onPreparedRequest(body, ctx)`
+callback, after `codexBody()`, provider-specific field normalization and
+`WithExtraBody()`, but before Codex authentication, session headers and request
+compression. It applies **only to general-gateway requests using the built-in
+Codex account on Responses**; the native Codex CLI backend passthrough is
+intentionally excluded. All other providers, including community Command Code
+plugins, are unchanged.
+
+This hook is **not** enabled by installing a plugin. The gateway operator must
+set `MAGPIE_PREPARED_HOOK_PLUGIN` to **exactly** the enabled plugin's installed
+spec (as recorded in Magpie's plugin list), then restart Magpie. Only that
+single plugin receives the adapted request, never other installed plugins.
+The capability intentionally exposes the entire final prompt to the explicitly
+trusted plugin. Do not authorize third-party or unreviewed plugin code.
+
+Example `my-codex.hooks.mjs`:
+
+```js
+export function onPreparedRequest(body, ctx) {
+  if (ctx.provider !== "codex") return;
+  // Optional policy: keep Pi's original instructions without Codex's.
+  // This affects the subscription's request profile and is at your risk.
+  if (!ctx.injectedDeveloper) return;
+  const own = body.input?.[0]?.content?.[0]?.text;
+  if (typeof own !== "string" || !own) return;
+  return { ...body, instructions: own, input: body.input.slice(1) };
+}
+```
+
+The callback receives the final Responses JSON and
+`{provider, protocol, model, injectedDeveloper, options, signal}`.
+It may change only a **nonempty top-level `instructions`** and optionally
+delete the **single Magpie-generated leading developer item** when Go verified
+it was generated for this request. Original developer messages, tools, tool
+results, reasoning, model, streaming and all other fields cannot be modified.
+Any invalid change or timeout reverts **all** edits for that attempt.
+
+When a hook makes an accepted change, the gateway deterministically derives a
+new `prompt_cache_key` from the previous key and changed content; Codex
+signing then uses that key for `session-id` and `thread-id`. Requests without
+an existing cache key are left unchanged to avoid unsafe session mixing.
+Existing sessions should be restarted after changing the policy.
+
+Note: Using a different subscription prompt can change the request's behavior
+and may pose provider/account risks. This is a local operator decision, not an
+endorsement or an assertion about OpenAI subscription terms. Do not place
+secrets, tokens, or raw prompts into diagnostics.
