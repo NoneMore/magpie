@@ -1,4 +1,4 @@
-name: LM Detector native plugin
+name: LM Detector bundled plugin
 
 on:
   push:
@@ -14,6 +14,11 @@ on:
     paths:
       - 'plugins/lm-detector/**'
       - '.github/workflows/lm-detector.yml'
+      - '.github/scripts/prepare-lm-detector.mjs'
+      - 'internal/cli/bundled_lm_detector.go'
+      - 'internal/cli/main.go'
+      - 'internal/plugin/bundled*.go'
+      - 'internal/plugin/bundled-lm-detector/**'
 
 jobs:
   test-native-detector:
