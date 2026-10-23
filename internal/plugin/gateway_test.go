@@ -505,25 +505,33 @@ func TestGatewayHookNamesApartFromMiddleware(t *testing.T) {
 	}
 }
 
-func TestGatewayPreparedRequiresExactExplicitTrust(t *testing.T) {
+func TestPreparedHookAppliesAfterProviderAdapter(t *testing.T) {
 	sandbox(t)
-	spec := gatewayFixture(t, `export function onPreparedRequest(body, ctx) {
+	gatewayFixture(t, `export function onPreparedRequest(body, ctx) {
 		if (ctx.provider !== "codex") return
-		return {...body, instructions:"plugin"}
+		return {...body, instructions:"Own instructions", input:body.input.slice(1), tool_choice:"none"}
 	}`)
-	body := []byte(`{"model":"gpt-5.5","instructions":"Codex","input":[]}`)
-	info := PreparedContext{Provider: "codex", Protocol: "responses", Model: "gpt-5.5"}
-	if got := GatewayPrepared(t.Context(), body, info); string(got) != string(body) {
-		t.Fatalf("prepared hook ran without trust: %s", got)
+	body := []byte(`{"model":"gpt-5.5","instructions":"Codex instructions","tool_choice":"auto","input":[{"role":"developer","content":"Own instructions"},{"role":"user","content":"hello"}]}`)
+	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Protocol: "responses", Model: "gpt-5.5"})
+	var got struct {
+		Instructions string `json:"instructions"`
+		ToolChoice string `json:"tool_choice"`
+		Input []json.RawMessage `json:"input"`
 	}
-	t.Setenv("MAGPIE_PREPARED_HOOK_PLUGIN", "wrong-plugin")
-	if got := GatewayPrepared(t.Context(), body, info); string(got) != string(body) {
-		t.Fatalf("untrusted plugin ran: %s", got)
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
 	}
-	t.Setenv("MAGPIE_PREPARED_HOOK_PLUGIN", spec)
-	got := GatewayPrepared(t.Context(), body, info)
-	var m map[string]any
-	if err := json.Unmarshal(got, &m); err != nil || m["instructions"] != "plugin" {
-		t.Fatalf("trusted prepared hook did not run: %s (%v)", got, err)
+	if got.Instructions != "Own instructions" || got.ToolChoice != "none" || len(got.Input) != 1 {
+		t.Fatalf("prepared hook did not modify final body: %s", out)
+	}
+}
+
+func TestPreparedHookFailureKeepsRequest(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(){throw new Error("failed")}`)
+	body := []byte(`{"instructions":"Codex","input":[]}`)
+	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"})
+	if !reflect.DeepEqual(out, body) {
+		t.Fatalf("failed hook changed final body: %s", out)
 	}
 }

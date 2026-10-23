@@ -234,36 +234,19 @@ func (r *GatewayRun) Close() {
 	_ = r.h.call(ctx, "gatewayRequest", map[string]any{"operation": "close", "id": r.id, "token": r.token}, nil)
 }
 
-// PreparedContext identifies an already-adapted Codex request. It intentionally
-// contains no authorization headers, access tokens, or client credentials.
+// PreparedContext identifies a request after its provider-specific body
+// adapter has run. No HTTP headers or credentials are exposed.
 type PreparedContext struct {
-	Provider          string `json:"provider"`
-	Protocol          string `json:"protocol"`
-	Model             string `json:"model"`
-	InjectedDeveloper bool   `json:"injectedDeveloper"`
+	Provider string `json:"provider"`
+	Protocol string `json:"protocol"`
+	Model    string `json:"model"`
 }
 
-// PreparedHookSpec returns the exact, explicitly trusted installed plugin spec.
-// Ordinary installed plugins never receive final subscription request bodies.
-func PreparedHookSpec() string {
-	spec := strings.TrimSpace(os.Getenv("MAGPIE_PREPARED_HOOK_PLUGIN"))
-	if spec == "" {
-		return ""
-	}
-	for _, p := range Load().Plugins {
-		if !p.Off && p.Spec == spec && Gateway(Target(p.Spec)) != "" {
-			return spec
-		}
-	}
-	return ""
-}
-
-// GatewayPrepared runs one privileged, opt-in hook after provider adaptation.
-// Errors, malformed replies and timeouts are fail-open to the original body;
-// semantic validation and cache isolation are performed by the gateway.
+// GatewayPrepared runs enabled plugins' onPreparedRequest callbacks in their
+// normal order. A plugin opts in simply by exporting the callback. Failure
+// leaves the latest accepted request unchanged.
 func GatewayPrepared(ctx context.Context, body []byte, info PreparedContext) []byte {
-	spec := PreparedHookSpec()
-	if spec == "" {
+	if !HasGateway() {
 		return body
 	}
 	start, cancel := context.WithTimeout(ctx, 11*time.Second)
@@ -289,8 +272,9 @@ func GatewayPrepared(ctx context.Context, body []byte, info PreparedContext) []b
 	}
 	var out json.RawMessage
 	err = h.call(start, "gatewayRequest", map[string]any{
-		"operation": "prepared", "spec": spec,
-		"body": json.RawMessage(body), "context": info,
+		"operation": "prepared",
+		"body": json.RawMessage(body),
+		"context": info,
 	}, &out)
 	if err != nil || len(out) == 0 || out[0] != '{' || !json.Valid(out) {
 		return body

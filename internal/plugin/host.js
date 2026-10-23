@@ -1384,28 +1384,34 @@ async function gatewayFinish(run, p, signal) {
   return null
 }
 
-// Only the Go gateway may authorize the selected plugin, and it validates the
-// resulting body. Other plugins do not see this privileged request.
+// A post-adaptation hook is a deliberate, locally installed request-body
+// customization. The final body belongs to the plugin author, not the host.
 async function gatewayPrepared(p, signal) {
-  const h = gatewayHooks.find((x) => x.spec === p.spec && typeof x.onPreparedRequest === "function")
-  if (!h) return null
-  const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
-  const ownSignal = AbortSignal.any([signal, ctl.signal])
-  try {
-    const ctx = { ...p.context, options: structuredClone(h.options), signal: ownSignal }
-    const result = await bounded(Promise.resolve().then(() => h.onPreparedRequest(structuredClone(p.body), ctx)), ownSignal)
-    if (result === undefined) return p.body
-    if (!result || typeof result !== "object" || Array.isArray(result)) return null
-    const next = JSON.parse(JSON.stringify(result))
-    return next && typeof next === "object" && !Array.isArray(next) ? next : null
-  } catch {
-    if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: prepared request hook failed; keeping original request` })
-    return null
-  } finally {
-    clearTimeout(timer)
-    ctl.abort()
+  const hooks = gatewayHooks.filter((h) => typeof h.onPreparedRequest === "function")
+  if (!hooks.length) return null
+  const total = AbortSignal.any([signal, AbortSignal.timeout(gatewayBudget())])
+  let body = p.body
+  for (const h of hooks) {
+    if (total.aborted) break
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
+    const ownSignal = AbortSignal.any([total, ctl.signal])
+    try {
+      const ctx = { ...p.context, options: structuredClone(h.options), signal: ownSignal }
+      const result = await bounded(Promise.resolve().then(() => h.onPreparedRequest(structuredClone(body), ctx)), ownSignal)
+      if (result === undefined) continue
+      if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("invalid prepared body")
+      const next = JSON.parse(JSON.stringify(result))
+      if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("invalid serialized body")
+      body = next
+    } catch {
+      if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: prepared request hook failed or timed out; keeping request` })
+    } finally {
+      clearTimeout(timer)
+      ctl.abort()
+    }
   }
+  return body
 }
 
 async function gatewayRequest(p, signal) {

@@ -3973,8 +3973,8 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		}
 		body = extra
 	}
-	// A privileged fork-only hook sees the final provider body, before
-	// subscription signing derives the session headers and compression.
+	// Built-in Codex has already run codexBody via p.Prepare at each caller.
+	// Let locally installed hooks customize this final body before signing.
 	body = preparedCodexHook(ctx, p, to, body)
 	if !countsTokens(path) {
 		// the tier it goes at, the user's own fields in it (#1784)
@@ -4401,7 +4401,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Responses && p.Account != nil && (p.Account.Agent == "grok" || p.PluginProvider() == "grok" || p.PluginProvider() == "zed") {
 		named = namespacedIn(body)
 	}
-	res, err := s.forwardPrepared(r.Context(), p, proto, path, body, r.Header)
+	res, err := s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header)
 	if err != nil {
 		return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 	}
@@ -4430,7 +4430,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			mark = schemaRefused(model)
 		}
 		body = nb
-		if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+		if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 			return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 		}
 		if res.StatusCode < 400 {
@@ -4470,7 +4470,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				turnAfter = true
 				refused = append(refused, prefillRefused(model))
 				body = nb
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
@@ -4482,7 +4482,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if nb, changed := objectRootsBody(proto, body); changed {
 				refused = append(refused, rootUnionRefused(model))
 				body = nb
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
@@ -4494,7 +4494,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if nb, changed := withoutToolStrict(proto, body); changed {
 				refused = append(refused, toolStrictRefused)
 				body = nb
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
@@ -4508,7 +4508,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if nb := withoutReasoningText(body); !bytes.Equal(nb, body) {
 				refused = append(refused, reasoningTextRefused(model))
 				body = nb
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
@@ -4526,7 +4526,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if nb := withoutBareReasoning(body); !replay && !bytes.Equal(nb, body) {
 				refused = append(refused, bareReasoningRefused(model))
 				body = nb
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
@@ -4540,7 +4540,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if nb := plainItemIDs(body); !bytes.Equal(nb, body) {
 				refused = append(refused, itemIDsRefused(model))
 				body = nb
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
@@ -4559,7 +4559,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			}
 			refused = append(refused, imageToolRefused)
 			body = nb
-			if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 			continue
@@ -4570,7 +4570,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			refused = append(refused, messageField(f))
 		}
 		body = withoutMessageReasoning(body, ms)
-		if res, err = s.forwardPrepared(r.Context(), p, proto, path, body, r.Header); err != nil {
+		if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
 			return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 		}
 	}
@@ -4595,12 +4595,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = levelRefused(model, e)
 			}
 			s.markUnfit(p.ID, refused, proto)
-			if res, err = s.forwardPrepared(r.Context(), p, proto, path, withBodyEffort(proto, body, onEffort(p, model)), r.Header); err != nil {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(withBodyEffort(proto, body, onEffort(p, model))), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		} else if proto == provider.Chat && mandatoryReasoning.Match(b) {
 			if nb, ok := withoutReasoningOff(body); ok {
-				if res, err = s.forwardPrepared(r.Context(), p, proto, path, nb, r.Header); err != nil {
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 			}
@@ -4613,7 +4613,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(b))
 		if toolsWithoutEffort.Match(b) && !s.servesElsewhere(p, model, proto) && !s.turnedAway(p, model, "none", proto) {
-			off, err := s.forwardPrepared(r.Context(), p, proto, path, withBodyEffort(proto, body, "none"), r.Header)
+			off, err := s.forward(r.Context(), p, proto, path, p.Prepare(withBodyEffort(proto, body, "none")), r.Header)
 			if err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
@@ -4641,18 +4641,18 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// Sonnet 5.5 by a name thinkingOffAsTaken doesn't know asks for
 		// between_tools in place of disabled (#1454)
 		if nb, ok := withBetweenTools(body); ok && asksBetweenTools.Match(b) {
-			if res, err = s.forwardPrepared(r.Context(), p, proto, path, nb, r.Header); err != nil {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		} else if nb, ok := withoutThinkingOff(body); ok && refusesThinkingOff(b) {
 			s.markUnfit(p.ID, offRefused(model), proto)
-			if res, err = s.forwardPrepared(r.Context(), p, proto, path, nb, r.Header); err != nil {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		} else if nb, ok := withoutSampling(body); ok && samplingDeprecated.Match(b) {
 			// a Claude by a name samplingAsTaken doesn't know refusing
 			// temperature, top_p or top_k (#1454)
-			if res, err = s.forwardPrepared(r.Context(), p, proto, path, nb, r.Header); err != nil {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		}
@@ -5241,7 +5241,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			p.Chat = strings.TrimSuffix(p.Chat, "/v1")
 			path = "/beta" + path
 		}
-		res, err := s.forwardPrepared(ctx, p, to, path, body, in)
+		res, err := s.forward(ctx, p, to, path, p.Prepare(body), in)
 		if err != nil || res.StatusCode < 400 {
 			if dropped && err == nil {
 				// it was the key: not sent there again

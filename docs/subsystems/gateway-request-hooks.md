@@ -112,53 +112,50 @@ Service deployment, automatic installation and gateway-owned tool loops are
 outside this contract. A concrete companion integration is PowerContext recall
 via `/v1/context/prepare` and conversation capture via `/v1/sources/content`.
 
+## Post-adaptation request hook (personal fork)
 
-## Privileged prepared Codex request hook (NoneMore fork)
+An installed gateway hook file can also export
+`onPreparedRequest(body, ctx)`. This is separate from the existing
+`onRequest` (which runs **before** routing and provider adaptation).
 
-This fork supports an **explicitly authorized** `onPreparedRequest(body, ctx)`
-callback, after `codexBody()`, provider-specific field normalization and
-`WithExtraBody()`, but before Codex authentication, session headers and request
-compression. It applies **only to general-gateway requests using the built-in
-Codex account on Responses**; the native Codex CLI backend passthrough is
-intentionally excluded. All other providers, including community Command Code
-plugins, are unchanged.
+`onPreparedRequest` is called **after** `codexBody()` and the
+gateway's final body transforms, but **before** the built-in Codex
+account request is signed and compressed. This applies to the general
+gateway's built-in `codex` account on Responses only. Native Codex
+CLI backend passthrough, Command Code plugins, and other providers are
+not affected.
 
-This hook is **not** enabled by installing a plugin. The gateway operator must
-set `MAGPIE_PREPARED_HOOK_PLUGIN` to **exactly** the enabled plugin's installed
-spec (as recorded in Magpie's plugin list), then restart Magpie. Only that
-single plugin receives the adapted request, never other installed plugins.
-The capability intentionally exposes the entire final prompt to the explicitly
-trusted plugin. Do not authorize third-party or unreviewed plugin code.
+No extra configuration is required: install and enable a plugin which
+exports the callback. All enabled plugins exporting it run in normal
+plugin order. As with the regular hook, the callback may be async; it
+returns an object to replace the current request body or `undefined`
+to leave it alone. Each plugin receives
+`{provider, protocol, model, options, signal}` in `ctx`.
+Errors, timeouts and non-JSON-object results keep the latest accepted
+body instead. No field-level restrictions or prompt strategy are imposed.
 
-Example `my-codex.hooks.mjs`:
+Example (a `*.hooks.mjs` file):
 
 ```js
 export function onPreparedRequest(body, ctx) {
   if (ctx.provider !== "codex") return;
-  // Optional policy: keep Pi's original instructions without Codex's.
-  // This affects the subscription's request profile and is at your risk.
-  if (!ctx.injectedDeveloper) return;
-  const own = body.input?.[0]?.content?.[0]?.text;
+  const first = body.input?.[0];
+  // Inspect the actual request shape first; only remove the first item
+  // when it is the client prompt that codexBody() synthesized.
+  if (first?.role !== "developer" ||
+      first?.content?.[0]?.type !== "input_text") return;
+  const own = first.content[0].text;
   if (typeof own !== "string" || !own) return;
   return { ...body, instructions: own, input: body.input.slice(1) };
 }
 ```
 
-The callback receives the final Responses JSON and
-`{provider, protocol, model, injectedDeveloper, options, signal}`.
-It may change only a **nonempty top-level `instructions`** and optionally
-delete the **single Magpie-generated leading developer item** when Go verified
-it was generated for this request. Original developer messages, tools, tool
-results, reasoning, model, streaming and all other fields cannot be modified.
-Any invalid change or timeout reverts **all** edits for that attempt.
-
-When a hook makes an accepted change, the gateway deterministically derives a
-new `prompt_cache_key` from the previous key and changed content; Codex
-signing then uses that key for `session-id` and `thread-id`. Requests without
-an existing cache key are left unchanged to avoid unsafe session mixing.
-Existing sessions should be restarted after changing the policy.
-
-Note: Using a different subscription prompt can change the request's behavior
-and may pose provider/account risks. This is a local operator decision, not an
-endorsement or an assertion about OpenAI subscription terms. Do not place
-secrets, tokens, or raw prompts into diagnostics.
+This is a deliberately powerful hook for a **personal fork**: it can
+rewrite any body field, including tools, model, thinking and cache IDs.
+Do not install untrusted plugins. Changing the prompt may alter the
+subscription request profile and could have provider/account risks;
+whether a request succeeds is not proof of compliance with the
+provider's terms. The hook does not automatically isolate caches:
+if your policy changes, start a new session or update
+`prompt_cache_key` in your plugin. A changed key is used by Codex
+signing for its session headers.
