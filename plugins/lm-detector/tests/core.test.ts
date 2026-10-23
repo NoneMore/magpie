@@ -1,8 +1,11 @@
 import {expect, test} from "bun:test";
+import {createRequire} from "node:module";
+import {dirname,join} from "node:path";
+import {readFile} from "node:fs/promises";
 import {generateChallenges} from "../shared/challenge-browser.js";
 import {parseNumbers, countNumbers, orderedBlockFeature} from "../shared/fingerprint-core.js";
 import {decodeDetector} from "../shared/detector-codec.ts";
-import {supportsSharedDetector} from "../shared/shared-detector.ts";
+import {analyzeSharedOutputs,supportsSharedDetector} from "../shared/shared-detector.ts";
 
 test("three challenges have independent valid lengths", () => {
   const challenges=generateChallenges(3);
@@ -40,4 +43,20 @@ test("detector and bank must describe the exact same references", () => {
   const artifact={schema:"shared-detector-v2",bank_built_at:"fixture",model_ids:["a"],response_counts:[3]};
   expect(supportsSharedDetector(bank,artifact)).toBe(true);
   expect(supportsSharedDetector({...bank,built_at:"other"},artifact)).toBe(false);
+});
+
+test("installed reference data and scorer share the same detector version", async () => {
+  const require=createRequire(import.meta.url);
+  const root=dirname(require.resolve("lmfpd/package.json"));
+  const [bankFile,detectorBytes]=await Promise.all([
+    readFile(join(root,"data","unified_bank.json"),"utf8"),
+    readFile(join(root,"data","shared_detector.bin"))
+  ]);
+  const bank=JSON.parse(bankFile);
+  const detector=decodeDetector(detectorBytes);
+  expect(supportsSharedDetector(bank,detector)).toBe(true);
+  const samples=Array.from({length:3},()=>({text:Array(300).fill(1).join(", "),expected_count:300}));
+  const analysis=analyzeSharedOutputs(samples,bank,detector);
+  expect(analysis.decision).toBe("not_model");
+  expect(analysis.results).toEqual([]);
 });

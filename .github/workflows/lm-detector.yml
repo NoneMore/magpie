@@ -1,0 +1,27 @@
+name: LM Detector native plugin
+
+on:
+  push:
+    paths:
+      - 'plugins/lm-detector/**'
+      - '.github/workflows/lm-detector.yml'
+  pull_request:
+    paths:
+      - 'plugins/lm-detector/**'
+      - '.github/workflows/lm-detector.yml'
+
+jobs:
+  test-native-detector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install reference data package
+        working-directory: plugins/lm-detector
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run direct-detector core tests
+        working-directory: plugins/lm-detector
+        run: bun test tests/*.test.ts
