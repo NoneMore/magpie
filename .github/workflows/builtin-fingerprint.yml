@@ -39,7 +39,7 @@ jobs:
           bun-version: 1.4.2
       - name: Verify pinned lm-detector package installs and launches
         timeout-minutes: 8
-        run: bun x --bun lmfpd@0.0.1790172702647 --help
+        run: bun x --bun lmfpd@0.0.1792416845676 --help
       - name: JavaScript syntax
         run: |
           node --check internal/gui/assets/plugins/fingerprint/client.js
@@ -76,9 +76,9 @@ jobs:
         run: |
           mkdir -p dist/fingerprint-engine
           echo "Current published lmfpd version: $(npm view lmfpd version)"
-          npm install --prefix dist/fingerprint-engine --no-audit --no-fund --ignore-scripts --omit=dev lmfpd@0.0.1790172702647
+          npm install --prefix dist/fingerprint-engine --no-audit --no-fund --ignore-scripts --omit=dev lmfpd@0.0.1792416845676
           find dist/fingerprint-engine/node_modules/lmfpd -maxdepth 3 -type f | head -35
-          node -e "const p=require('./dist/fingerprint-engine/node_modules/lmfpd/package.json');if(p.version!=='0.0.1790172702647')process.exit(1)"
+          node -e "const p=require('./dist/fingerprint-engine/node_modules/lmfpd/package.json');if(p.version!=='0.0.1792416845676')process.exit(1)"
           test -s dist/fingerprint-engine/node_modules/lmfpd/bin/fpd.js
           ls -lh dist/fingerprint-engine/node_modules/lmfpd/data || true
           test -s dist/fingerprint-engine/node_modules/lmfpd/data/shared_detector.bin
