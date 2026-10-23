@@ -104,3 +104,95 @@ jobs:
           path: dist/magpie-linux-amd64
           if-no-files-found: error
           retention-days: 7
+
+  # This is the Windows desktop program, not the 'nogui' terminal build.
+  # Magpie's Makefile uses go-winres to embed the Windows icon/manifest and
+  # links as windowsgui. WebView2 requires no CGO, so both Windows arches
+  # can be cross-compiled by GitHub's Linux runner with Go from go.mod.
+  windows-desktop:
+    name: Windows desktop GUI + CLI (x64 / ARM64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Windows GUI with icon and manifest
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go version
+          make release-windows VERSION=0.0.0
+          test -s dist/magpie-windows-amd64.exe
+          test -s dist/magpie-windows-arm64.exe
+
+      - name: Build Windows CLI (both architectures)
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=windows GOARCH="$arch" go build -tags nogui -trimpath \
+              -o "dist/magpie-cli-windows-$arch.exe" .
+            test -s "dist/magpie-cli-windows-$arch.exe"
+          done
+
+      - name: Check binary formats and checksums
+        shell: bash
+        run: |
+          file dist/*windows*.exe
+          file dist/magpie-windows-amd64.exe | grep 'PE32+ executable'
+          file dist/magpie-windows-arm64.exe | grep 'PE32+ executable'
+          (cd dist && sha256sum magpie-*windows*.exe > SHA256SUMS-windows.txt)
+
+      - name: Upload Windows x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-page-bridge-windows-amd64
+          path: |
+            dist/magpie-windows-amd64.exe
+            dist/magpie-cli-windows-amd64.exe
+            dist/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows ARM64
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-page-bridge-windows-arm64
+          path: |
+            dist/magpie-windows-arm64.exe
+            dist/magpie-cli-windows-arm64.exe
+            dist/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # Smoke-test the uploaded x64 executable *on Windows*, not only via
+  # a Linux cross-compile. The GUI cannot be launched reliably in headless
+  # CI, so that part is verified by building with Windows resources.
+  windows-smoke:
+    name: Windows x64 native startup smoke test
+    needs: windows-desktop
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: magpie-page-bridge-windows-amd64
+          path: build
+
+      - name: Check native Windows command-line startup
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'build/magpie-windows-amd64.exe')) { throw 'GUI binary missing' }
+          if (!(Test-Path 'build/magpie-cli-windows-amd64.exe')) { throw 'CLI binary missing' }
+          $result = & 'build/magpie-cli-windows-amd64.exe' version
+          if ($LASTEXITCODE -ne 0 -or "$result" -notmatch '^magpie ') {
+            throw "Native Windows CLI startup failed: $result"
+          }
+          Write-Output $result
