@@ -25,3 +25,10 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums;}
 details{margin-top:18px;}summary{cursor:pointer;}pre{white-space:pre-wrap;max-height:310px;overflow:auto;overflow-wrap:anywhere;}
 .note{font-size:12px;line-height:1.7;margin-top:18px;}[hidden]{display:none!important;}
 @media(max-width:620px){body{padding:15px}.panel{padding:13px}header{flex-direction:column;}}
+
+.config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px;}
+.config-grid input:not([type="checkbox"]){box-sizing:border-box;width:100%;min-height:39px;border:1px solid var(--magpie-line,#9994);border-radius:7px;padding:7px;background:transparent;color:inherit;}
+.config-grid select{background:transparent;color:inherit;}
+.strict-option{align-self:end;padding-bottom:5px;}.strict-option label{margin-top:10px;}.strict-option small{display:block;line-height:1.5;}
+#roundNotice{font-size:12px;line-height:1.5;margin:8px 0 14px;}
+@media(max-width:620px){.config-grid{grid-template-columns:1fr;}}
