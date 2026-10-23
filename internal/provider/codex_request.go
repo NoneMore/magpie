@@ -90,7 +90,7 @@ var codexUA struct {
 // changing its identity between turns. Both body keys and header-only
 // sessions use the same transform.
 func callerCacheKey(key string) string {
-	hash := sha256.Sum256([]byte("codex-caller-prompt\\x00" + key))
+	hash := sha256.Sum256([]byte("codex-caller-prompt\x00" + key))
 	id := hex.EncodeToString(hash[:])
 	return id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
 }
