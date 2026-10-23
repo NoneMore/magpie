@@ -33,6 +33,8 @@ func TestPreparedCodexHookOnlyOnSubscription(t *testing.T) {
 
 func TestPreparedCodexHookReachesSignedWire(t *testing.T) {
 	codexSignedIn(t)
+	restore := provider.CodexZstdForTests(true)
+	defer restore()
 	t.Setenv("MAGPIE_BUN", testenv.Bun(t))
 	t.Cleanup(plugin.Settle)
 
