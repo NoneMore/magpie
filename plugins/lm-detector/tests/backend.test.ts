@@ -189,7 +189,7 @@ test("SSE progress distinguishes first body byte, visible TTFT and estimated TPS
   fakeGateway(async()=>new Response(new ReadableStream({
     async start(controller){
       try {
-        controller.enqueue(encoder.encode(": keepalive\\n\\n"));
+        controller.enqueue(encoder.encode(": keepalive\n\n"));
         await Bun.sleep(70);
         for(let i=0;i<4;i++){
           controller.enqueue(encoder.encode(eventData({choices:[{index:0,delta:{
