@@ -331,7 +331,7 @@ async function start({model,format="responses",stream=false,effort,
   if (model.startsWith("group/")) throw Error("Routing groups cannot be fingerprinted reliably.");
   if (!["responses","chat"].includes(format)) throw Error("Unsupported API protocol.");
   if (typeof stream!=="boolean") throw Error("Invalid streaming option.");
-  if (effort!==undefined && (typeof effort!=="string" || !/^[a-zA-Z0-9_.-]{1,64}$/.test(effort)))
+  if (effort!==undefined && (typeof effort!=="string" || !(effort.length >= 1 && effort.length <= 64 && effort.trim() === effort && [...effort].every(ch => ch.codePointAt(0) >= 32 && ch.codePointAt(0) !== 127))))
     throw Error("Invalid reasoning effort.");
   if (typeof timeout!=="number" || !Number.isFinite(timeout) || timeout<0.1 || timeout>600)
     throw Error("Timeout must be between 0.1 and 600 seconds.");
