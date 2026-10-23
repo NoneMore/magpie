@@ -27,6 +27,8 @@ a prerequisite for this personal Windows fork.
 The gate is deliberately focused for daily stability and a short runtime;
 it is **not** equivalent to full Go, ARM64 runtime or full browser coverage.
 Windows sync/Test jobs are capped at 35 minutes, not a speed guarantee.
+New main/PR Test runs cancel stale same-ref Test runs so an obsolete long
+run cannot block the latest check; no cancelled run can trigger a release.
 
 ## Browser and LM Detector deeper testing
 The separate **Optional UI Smoke** workflow is manual-only and checks
