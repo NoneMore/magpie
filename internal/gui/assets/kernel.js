@@ -14,6 +14,7 @@
 // app.js calls once it is set up.
 (() => {
   const plugins = new Map(); // id → { id, config, onConfig: [], disposers: [] }
+  const builtinActions = []; // a built-in plugin may add a provider or agent row action
   const pages = new Map(); // key → { plugin, part, main, mounted, broken }
   let started = false;
 
@@ -33,6 +34,10 @@
         if (page && page.plugin === p && !page.broken) fail(page, "open", [], err);
       },
       slots: { add: (slot, part) => add(p, slot, part) },
+      actions: { add: (menu, title, run) => {
+        if (!["provider", "agent"].includes(menu) || !title || typeof run !== "function") throw Error("invalid built-in action");
+        builtinActions.push({ plugin: p.id, menu, title, run });
+      } },
       ui,
     };
   }
@@ -259,6 +264,11 @@
       }
     },
     page: (key) => pages.get(key)?.part,
+    builtinActions(menu, context) {
+      return builtinActions.filter(a => a.menu === menu && !(window.bootPrefs?.featuresOff || []).includes(a.plugin))
+        .map(a => ({ name: typeof t === "function" ? t(a.title) : a.title, literal: true,
+          run: () => a.run(context) }));
+    },
     pages: () => [...pages.keys()],
     // the plugins' settings as Plugins › Built-in or boot.js has them
     configure(id, config) {
