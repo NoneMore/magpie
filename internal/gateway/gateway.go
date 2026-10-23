@@ -3973,6 +3973,9 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		}
 		body = extra
 	}
+	// Built-in Codex has already run codexBody via p.Prepare at each caller.
+	// Let locally installed hooks customize this final body before signing.
+	body = preparedCodexHook(ctx, p, to, body)
 	if !countsTokens(path) {
 		// the tier it goes at, the user's own fields in it (#1784)
 		noteWireTier(ctx, to, body)

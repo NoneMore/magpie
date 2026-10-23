@@ -426,6 +426,7 @@ type host struct {
 	dead     chan struct{}
 	err      error
 	loaded   []Loaded
+	prepared bool // whether any loaded plugin exports onPreparedRequest
 	// renewing is how many sign-ins the host is renewing: stop lets them
 	// end, their new tokens saved, before it kills the host
 	renewing atomic.Int32
@@ -981,7 +982,8 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		}
 	}
 	var res struct {
-		Plugins []Loaded `json:"plugins"`
+		Plugins  []Loaded `json:"plugins"`
+		Prepared bool     `json:"prepared"`
 	}
 	ictx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -1005,6 +1007,7 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		return nil, crashed, fmt.Errorf("starting plugins: %w", err)
 	}
 	h.loaded = res.Plugins
+	h.prepared = res.Prepared
 	noteTools(res.Plugins)
 	for _, p := range res.Plugins {
 		if p.Error != "" {

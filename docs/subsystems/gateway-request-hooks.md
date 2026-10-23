@@ -70,8 +70,11 @@ bytes are forwarded immediately; a bounded copy is consolidated into that
 protocol's response shape only for this callback, through the same decoder,
 collector and renderer the gateway translates with (a Responses stream's
 `response.completed` response is the reply as it is). The callback cannot rewrite
-client output. `ctx.request` contains the accepted request, `ctx.success` reports
-completion, and the same per-hook `ctx.state` links recall with capture.
+client output. `ctx.request` contains the accepted pre-routing request, not
+the final provider-adapted wire body. `ctx.success` reports completion, and
+the same per-hook `ctx.state` links recall with capture. `onResponse` is
+paired with `onRequest`: exporting only `onPreparedRequest` does not register
+a response callback.
 
 Notification is fire-and-forget, with a fresh timeout signal independent of the
 finished HTTP request. It never waits for an observer's network operation before
@@ -111,3 +114,60 @@ go test -race -tags nogui ./internal/plugin ./internal/gateway -run '^TestGatewa
 Service deployment, automatic installation and gateway-owned tool loops are
 outside this contract. A concrete companion integration is PowerContext recall
 via `/v1/context/prepare` and conversation capture via `/v1/sources/content`.
+
+## Post-adaptation request hook (personal fork)
+
+An installed gateway hook file can also export
+`onPreparedRequest(body, ctx)`. This is separate from the existing
+`onRequest` (which runs **before** routing and provider adaptation).
+
+`onPreparedRequest` is called **after** `codexBody()` and the
+gateway's final body transforms, but **before** the built-in Codex
+account request is signed and compressed. This applies to the general
+gateway's built-in `codex` account on Responses only. Native Codex
+CLI backend passthrough, Command Code plugins, and other providers are
+not affected.
+
+No extra configuration is required: install and enable a plugin which
+exports the callback. All enabled plugins exporting it run in normal
+plugin order. A host with no such callback skips the prepared-body RPC. As with the regular hook, the callback may be async; it
+returns an object to replace the current request body or `undefined`
+to leave it alone. Each plugin receives
+`{provider, protocol, model, options, signal}` in `ctx`. For each plugin,
+`ctx.model` reflects the current `body.model`, including earlier hook changes.
+Errors, timeouts and non-JSON-object results keep the latest accepted
+body instead. An object with no changes after serialization, like `{...body}`,
+also preserves the original JSON bytes. No field-level restrictions or prompt
+strategy are imposed.
+
+A replacement object is still passed through JavaScript `Number` and
+`JSON.stringify`. If it changes anything, even untouched numeric fields
+outside JavaScript's safe integer range can lose precision. Return
+`undefined` (or an unchanged object) for a no-op, and avoid this object-based
+hook for requests that require lossless large JSON numbers.
+
+Example (a `*.hooks.mjs` file):
+
+```js
+export function onPreparedRequest(body, ctx) {
+  if (ctx.provider !== "codex") return;
+  const first = body.input?.[0];
+  // Inspect the actual request shape first; only remove the first item
+  // when it is the client prompt that codexBody() synthesized.
+  if (first?.role !== "developer" ||
+      first?.content?.[0]?.type !== "input_text") return;
+  const own = first.content[0].text;
+  if (typeof own !== "string" || !own) return;
+  return { ...body, instructions: own, input: body.input.slice(1) };
+}
+```
+
+This is a deliberately powerful hook for a **personal fork**: it can
+rewrite any body field, including tools, model, thinking and cache IDs.
+Do not install untrusted plugins. Changing the prompt may alter the
+subscription request profile and could have provider/account risks;
+whether a request succeeds is not proof of compliance with the
+provider's terms. The hook does not automatically isolate caches:
+if your policy changes, start a new session or update
+`prompt_cache_key` in your plugin. A changed key is used by Codex
+signing for its session headers.

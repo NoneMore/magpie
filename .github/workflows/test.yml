@@ -17,6 +17,34 @@ permissions:
   contents: read
 
 jobs:
+  # Check the Windows-first development path quickly on pull requests.
+  # The full platform, race and release checks still run on main or manually.
+  pr:
+    if: github.event_name == 'pull_request'
+    name: PR hooks (Windows, nogui)
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Gofmt
+        shell: bash
+        run: |
+          bad=$(git ls-files -z '*.go' | xargs -0 -n 20 gofmt -l)
+          if [ -n "$bad" ]; then echo "not gofmt'd:"; echo "$bad"; exit 1; fi
+      - name: Vet gateway and plugin
+        run: go vet -tags nogui ./internal/gateway ./internal/plugin
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepared and gateway hook regressions
+        shell: bash
+        run: |
+          go test -count=1 -timeout 5m -tags nogui ./internal/plugin ./internal/gateway \
+            -run '^(TestPrepared|TestGatewayHook|TestGatewayRun|TestAsyncGateway)'
+
   test:
     name: test (${{ matrix.os }})
     strategy:

@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 	"time"
 )
 
@@ -502,5 +504,119 @@ func TestGatewayHookNamesApartFromMiddleware(t *testing.T) {
 		if f, _ := Middleware(dir); hook && f != "" {
 			t.Errorf("magpie.%s is loaded as middleware too", key)
 		}
+	}
+}
+
+func TestPreparedHookSkippedWithoutCallback(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onRequest(body) { return body }`)
+	h, err := get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.prepared {
+		t.Fatal("request-only host advertised a prepared hook")
+	}
+	body := []byte(`{"model":"gpt-5.5","input":[]}`)
+	if got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"}); !reflect.DeepEqual(got, body) {
+		t.Fatalf("request-only host changed prepared request: %s", got)
+	}
+}
+
+func TestPreparedHookAppliesAfterProviderAdapter(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(body, ctx) {
+		if (ctx.provider !== "codex") return
+		return {...body, instructions:"Own instructions", input:body.input.slice(1), tool_choice:"none"}
+	}`)
+	body := []byte(`{"model":"gpt-5.5","instructions":"Codex instructions","tool_choice":"auto","input":[{"role":"developer","content":"Own instructions"},{"role":"user","content":"hello"}]}`)
+	h, err := get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.prepared {
+		t.Fatal("prepared hook was not advertised by host")
+	}
+	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Protocol: "responses", Model: "gpt-5.5"})
+	var got struct {
+		Instructions string            `json:"instructions"`
+		ToolChoice   string            `json:"tool_choice"`
+		Input        []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Instructions != "Own instructions" || got.ToolChoice != "none" || len(got.Input) != 1 {
+		t.Fatalf("prepared hook did not modify final body: %s", out)
+	}
+}
+
+func TestPreparedHookFailureKeepsRequest(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(){throw new Error("failed")}`)
+	body := []byte(`{"instructions":"Codex","input":[]}`)
+	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"})
+	if !reflect.DeepEqual(out, body) {
+		t.Fatalf("failed hook changed final body: %s", out)
+	}
+}
+
+func TestPreparedHookUndefinedPreservesJSON(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest() {}`)
+	// A JavaScript JSON round-trip would round this integer even for a no-op.
+	body := []byte(`{ "model":"gpt-5.5", "metadata":{"id":9007199254740993} }`)
+	if got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Model: "gpt-5.5"}); !reflect.DeepEqual(got, body) {
+		t.Fatalf("undefined hook changed request: %s", got)
+	}
+}
+
+func TestPreparedHookChainSeesCurrentModel(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(body) { return {...body, model:"gpt-5.6"} }`)
+	gatewayFixture(t, `export function onPreparedRequest(body, ctx) { return {...body, seenModel:ctx.model} }`)
+	body := []byte(`{"model":"gpt-5.5","input":[]}`)
+	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Model: "gpt-5.5"})
+	var got struct {
+		Model     string `json:"model"`
+		SeenModel string `json:"seenModel"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "gpt-5.6" || got.SeenModel != got.Model {
+		t.Fatalf("second hook observed a stale model: %s", out)
+	}
+}
+
+func TestPreparedHookReturnedCopyPreservesJSON(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(body) { return {...body} }`)
+	// The RPC has parsed this integer as JavaScript Number. A no-op must
+	// leave the original bytes in Go instead of returning the rounded value.
+	body := []byte(`{ "model":"gpt-5.5", "metadata":{"id":9007199254740993} }`)
+	if got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"}); !reflect.DeepEqual(got, body) {
+		t.Fatalf("no-op object rounded JSON: %s", got)
+	}
+}
+
+func TestPreparedHookTimeoutKeepsEarlierChangeAndRecordsFailure(t *testing.T) {
+	sandbox(t)
+	first := gatewayFixture(t, `export function onPreparedRequest(body) { return {...body, instructions:"first"} }`)
+	second := gatewayFixture(t, `export async function onPreparedRequest(body) {
+		await new Promise(resolve => setTimeout(resolve, 1000))
+		return {...body, instructions:"late"}
+	}`)
+	if err := SetOptions(second, map[string]any{"gatewayTimeoutMs": 100}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"instructions":"original","input":[]}`)
+	got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"})
+	if gjson.GetBytes(got, "instructions").String() != "first" {
+		t.Fatalf("later hook timeout lost earlier accepted change: %s", got)
+	}
+	states := GatewayStates(t.Context())
+	if states[first].Calls != 1 || states[second].Calls != 1 || states[second].Failures != 1 {
+		t.Fatalf("prepared hook diagnostics not updated: %+v", states)
 	}
 }

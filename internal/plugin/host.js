@@ -1224,7 +1224,7 @@ async function loadPlugins(list) {
       let gateway
       if (p.gateway) {
         gateway = await import(pathToFileURL(p.gateway).href)
-        if (typeof gateway.onRequest !== "function") throw new Error("magpie.hooks exports no onRequest")
+        if (typeof gateway.onRequest !== "function" && typeof gateway.onPreparedRequest !== "function") throw new Error("magpie.hooks exports neither onRequest nor onPreparedRequest")
       }
       let fns = []
       // A gateway-only package needs no OpenCode entry. Mixed packages
@@ -1238,7 +1238,7 @@ async function loadPlugins(list) {
       if (fns.length === 0 && !gateway) throw new Error("exports no OpenCode plugin function")
       for (const fn of fns) hooks.push({ spec: p.spec, target: p.target, hooks: (await fn(input, p.options)) ?? {} })
       if (gateway) gatewayHooks.push({ spec: p.spec, options: p.options ?? {}, onRequest: gateway.onRequest,
-        onResponse: gateway.onResponse,
+        onResponse: gateway.onResponse, onPreparedRequest: gateway.onPreparedRequest,
         state: { calls: 0, failures: 0, totalMillis: 0, lastOutcome: "idle", lastBytes: 0 } })
       if (!isPi) loaded.push({ spec: p.spec })
     } catch (e) {
@@ -1289,6 +1289,7 @@ function closeGateway(run) {
 }
 
 async function gatewayBegin(p, signal) {
+  if (!gatewayHooks.some((h) => typeof h.onRequest === "function")) return null
   if (gatewayRuns.size >= GATEWAY_RUN_LIMIT) return null
   const run = { id: randomUUID(), token: randomUUID(), plugins: [], controller: new AbortController(), closed: false, finished: false }
   gatewayRuns.set(run.id, run)
@@ -1299,6 +1300,7 @@ async function gatewayBegin(p, signal) {
   const total = AbortSignal.any([signal, run.controller.signal, AbortSignal.timeout(gatewayBudget())])
   for (const h of gatewayHooks) {
     if (total.aborted) break
+    if (typeof h.onRequest !== "function") continue
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
     const ownSignal = AbortSignal.any([total, ctl.signal])
@@ -1382,7 +1384,52 @@ async function gatewayFinish(run, p, signal) {
   return null
 }
 
+// A post-adaptation hook is a deliberate, locally installed request-body
+// customization. The final body belongs to the plugin author, not the host.
+async function gatewayPrepared(p, signal) {
+  const hooks = gatewayHooks.filter((h) => typeof h.onPreparedRequest === "function")
+  if (!hooks.length) return null
+  // Leave the Go RPC time to deliver earlier successful hook results.
+  const total = AbortSignal.any([signal, AbortSignal.timeout(Math.min(gatewayBudget(), p.budgetMs ?? gatewayBudget()))])
+  let body = p.body
+  let changed = false
+  for (const h of hooks) {
+    if (total.aborted) break
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
+    const ownSignal = AbortSignal.any([total, ctl.signal])
+    const started = performance.now()
+    let outcome = "skipped"
+    try {
+      const ctx = { ...p.context, model: typeof body.model === "string" ? body.model : "", options: structuredClone(h.options), signal: ownSignal }
+      const result = await bounded(Promise.resolve().then(() => h.onPreparedRequest(structuredClone(body), ctx)), ownSignal)
+      if (result === undefined) continue
+      if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("invalid prepared body")
+      const next = JSON.parse(JSON.stringify(result))
+      if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("invalid serialized body")
+      // Returning a copy with no changes must preserve the exact incoming JSON.
+      if (JSON.stringify(next) === JSON.stringify(body)) continue
+      body = next
+      changed = true
+      outcome = "ready"
+    } catch {
+      outcome = ownSignal.aborted ? (signal.aborted ? "cancelled" : "timeout") : "error"
+      if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: prepared request hook failed or timed out; keeping request` })
+    } finally {
+      h.state.calls++
+      if (outcome === "error" || outcome === "timeout") h.state.failures++
+      h.state.totalMillis += performance.now() - started
+      h.state.lastOutcome = outcome
+      h.state.lastBytes = 0
+      clearTimeout(timer)
+      ctl.abort()
+    }
+  }
+  return changed ? body : null
+}
+
 async function gatewayRequest(p, signal) {
+  if (p.operation === "prepared") return gatewayPrepared(p, signal)
   if (p.operation === "begin") return gatewayBegin(p, signal)
   const run = gatewayRuns.get(p.id)
   if (!run || run.closed || run.token !== p.token) return null
@@ -2585,7 +2632,7 @@ const handlers = {
     prefer = p.prefer ?? {}
     chosen = p.options ?? {}
     await loadPlugins(p.plugins ?? [])
-    return { plugins: loaded.map(withProviders) }
+    return { plugins: loaded.map(withProviders), prepared: gatewayHooks.some((h) => typeof h.onPreparedRequest === "function") }
   },
   providers: (p) => providers(p ?? {}),
   prompt: async (p) => ({ prompt: await nextPrompt(p.provider, p.method, p.inputs ?? {}) }),

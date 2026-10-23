@@ -233,3 +233,59 @@ func (r *GatewayRun) Close() {
 	defer cancel()
 	_ = r.h.call(ctx, "gatewayRequest", map[string]any{"operation": "close", "id": r.id, "token": r.token}, nil)
 }
+
+// PreparedContext identifies a request after its provider-specific body
+// adapter has run. No HTTP headers or credentials are exposed.
+type PreparedContext struct {
+	Provider string `json:"provider"`
+	Protocol string `json:"protocol"`
+	Model    string `json:"model"`
+}
+
+// GatewayPrepared runs enabled plugins' onPreparedRequest callbacks in their
+// normal order. A plugin opts in simply by exporting the callback. Failure
+// leaves the latest accepted request unchanged.
+func GatewayPrepared(ctx context.Context, body []byte, info PreparedContext) []byte {
+	if !HasGateway() {
+		return body
+	}
+	start, cancel := context.WithTimeout(ctx, 11*time.Second)
+	defer cancel()
+	checkList()
+	wait := time.NewTicker(10 * time.Millisecond)
+	defer wait.Stop()
+	for !hostMu.TryLock() {
+		select {
+		case <-start.Done():
+			return body
+		case <-wait.C:
+		}
+	}
+	if start.Err() != nil {
+		hostMu.Unlock()
+		return body
+	}
+	h, err := getLocked(start)
+	hostMu.Unlock()
+	if err != nil || start.Err() != nil || !h.prepared {
+		return body
+	}
+	// Let Bun finish its chain before the RPC deadline, so earlier accepted
+	// changes can still be returned if a later hook times out.
+	deadline, _ := start.Deadline()
+	budget := time.Until(deadline) - time.Second
+	if budget <= 0 {
+		return body
+	}
+	var out json.RawMessage
+	err = h.call(start, "gatewayRequest", map[string]any{
+		"operation": "prepared",
+		"body":      json.RawMessage(body),
+		"context":   info,
+		"budgetMs":  budget.Milliseconds(),
+	}, &out)
+	if err != nil || len(out) == 0 || out[0] != '{' || !json.Valid(out) {
+		return body
+	}
+	return out
+}
