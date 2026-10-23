@@ -87,6 +87,19 @@ test("routing group IDs are hidden and rejected before sampling",async()=>{
   } finally {globalThis.fetch=originalFetch;}
 });
 
+test("completed non-streaming Chat responses are accepted",async()=>{
+  fakeGateway(async()=>Response.json({
+    choices:[{finish_reason:"stop",message:{content:validResponse}}]
+  }));
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"chat"});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.completed).toBe(3);
+    expect(done.samples.every(s=>["complete","truncated"].includes(s.state))).toBe(true);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
 test("non-terminal Chat and Responses results are never scored",async()=>{
   for (const format of ["chat","responses"]) {
     fakeGateway(async()=>format==="chat"
