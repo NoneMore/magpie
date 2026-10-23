@@ -103,6 +103,16 @@
         if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(t("A page's options are an object"));
         return api("plugin-pages/options", { spec: e.spec, options: o });
       }
+      case "tool.run": {
+        // The source frame is matched before answering this message.
+        // Bind the operation to its own plugin; never accept a spec from the iframe.
+        if (!e.reads.includes("tool:run")) throw new Error("Page has no tool:run permission");
+        const name = String(m.params?.name || "");
+        if (!/^[A-Za-z0-9_-]{1,48}$/.test(name)) throw new Error("Invalid plugin tool name");
+        const args = m.params?.args ?? {};
+        if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be an object");
+        return api("plugin-pages/tool", { spec: e.spec, name, args });
+      }
       case "read": {
         const name = String(m.params?.name || "");
         // what its package didn't declare is refused here, and again by

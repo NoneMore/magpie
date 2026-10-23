@@ -336,6 +336,25 @@ Tests: `TestWindowPanels`, `TestPluginPanelsServedShutIn`,
 `TestPluginPanelsReadWhatTheyDeclared`, `TestPluginPageReplacesFirstWins`,
 `plugin-panels.test.cjs`. Example: `internal/gui/testdata/panel-plugin`.
 
+### Optional Page-to-plugin tool calls
+
+An installed plugin with a Page and a Bun backend may declare
+`"magpie": {"permissions": ["tool:run"]}`. Its sandboxed Page can then use
+`await magpie.tool.run(name, args)` to call an OpenCode-like tool belonging to
+**that same enabled plugin**. The result is `{result: text}`, where `text`
+is the tool's string or JSON-serialized return value. Like other plugin
+tools, calls have the 55-second host timeout; long jobs should provide
+short start/status/cancel tools rather than block one call.
+
+The window checks `tool:run` and attaches the owning plugin spec; the
+Go handler at `POST /api/plugin-pages/tool` rechecks enablement,
+permission, tool name and actual tool ownership before calling
+`plugin.RunTool`. Page CSP is unchanged (`connect-src 'none'`), so it
+cannot directly fetch Gateway or read credentials. The permission grants
+execution of *all tools of its own plugin*; review the backend before
+installing it. Host API access from outside the window still follows
+Magpie's existing management API trust model.
+
 ## P6: actions in magpie's menus
 
 P6 lets a plugin's page add items to the row menus magpie draws: a

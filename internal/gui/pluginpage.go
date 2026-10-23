@@ -363,6 +363,71 @@ func pluginPageRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(rw, v)
 	})
+	// A sandboxed Page can invoke only a tool supplied by the same
+	// enabled plugin, after declaring the explicit tool:run permission.
+	// The iframe itself remains network-isolated and receives no secrets.
+	mux.HandleFunc("POST /api/plugin-pages/tool", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Spec string          `json:"spec"`
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(rw, r.Body, 64<<10)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		_, reads, ok := windowOf(in.Spec)
+		if !ok || !slices.Contains(reads, "tool:run") {
+			http.Error(rw, "This page cannot run tools", http.StatusForbidden)
+			return
+		}
+		if len(in.Name) == 0 || len(in.Name) > 48 {
+			http.Error(rw, "Invalid tool name", http.StatusBadRequest)
+			return
+		}
+		for _, c := range in.Name {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+				http.Error(rw, "Invalid tool name", http.StatusBadRequest)
+				return
+			}
+		}
+		if len(in.Args) == 0 {
+			in.Args = json.RawMessage("{}")
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(in.Args, &obj); err != nil || obj == nil {
+			http.Error(rw, "Expected object tool arguments", http.StatusBadRequest)
+			return
+		}
+		listed, err := plugin.Tools(r.Context())
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		allowed := false
+		for _, item := range listed {
+			if item.Spec != in.Spec {
+				continue
+			}
+			for _, tool := range item.Tools {
+				if tool.Name == in.Name {
+					allowed = true
+					break
+				}
+			}
+			break
+		}
+		if !allowed {
+			http.Error(rw, "Tool does not belong to this plugin", http.StatusForbidden)
+			return
+		}
+		value, err := plugin.RunTool(r.Context(), in.Spec, in.Name, in.Args, "magpie-page")
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]string{"result": value})
+	})
 	// a page's or a panel's own options, as plugins.json keeps them: no
 	// other plugin's
 	mux.HandleFunc("POST /api/plugin-pages/options", func(rw http.ResponseWriter, r *http.Request) {

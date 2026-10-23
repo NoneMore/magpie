@@ -104,6 +104,7 @@
       set: (options) => call("options.set", { options }),
     },
     read: (name, params) => call("read", { name, params }),
+    tool: { run: (name, args = {}) => call("tool.run", { name, args }) },
   };
   api.ready = call("hello").then(({ context, ...theme }) => {
     api.theme = theme;
