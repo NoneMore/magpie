@@ -44,6 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Require release commit to be on fork main
+        id: source
         shell: bash
         run: |
           set -euo pipefail
@@ -52,8 +53,15 @@ jobs:
             echo "Release source is not a commit on fork main" >&2
             exit 1
           }
+          # Do not publish stale commits when older Test runs finish late.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]] &&
+             [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "A newer main commit exists; skip this obsolete release."
+          fi
 
       - name: Identify immutable release
+        if: steps.source.outputs.stale != 'true'
         id: meta
         shell: bash
         env:
@@ -72,20 +80,20 @@ jobs:
           fi
 
       - name: Set up Go
-        if: steps.meta.outputs.exists != 'true'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Set up Node.js
-        if: steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Set up Bun
-        if: steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -93,12 +101,12 @@ jobs:
       # Automatic release already passed Test (direct push) or the sync gate.
       # An owner-started manual release is verified here before publishing.
       - name: Gate manually requested Windows releases
-        if: steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         shell: pwsh
         run: ./.github/scripts/test-windows.ps1
 
       - name: Build Windows desktop and CLI (x64 / ARM64)
-        if: steps.meta.outputs.exists != 'true'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true'
         shell: pwsh
         env:
           FORK_TAG: ${{ steps.meta.outputs.tag }}
@@ -130,7 +138,7 @@ jobs:
           } | Set-Content -Encoding utf8 dist/SHA256SUMS.txt
 
       - name: Publish Windows binaries to this fork
-        if: steps.meta.outputs.exists != 'true'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
