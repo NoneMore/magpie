@@ -1,7 +1,7 @@
 // Build-time-only fetch. Release EXEs embed the two assets: end users do
 // not need Node, npm, or a network connection to run the bundled plugin.
 import { execFileSync } from "node:child_process";
-import { readFile, copyFile, mkdir, stat } from "node:fs/promises";
+import { readFile, copyFile, mkdir, stat, cp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -23,3 +23,15 @@ for (const name of ["unified_bank.json", "shared_detector.bin"]) {
   await copyFile(from, path.join(dest, name));
   console.log("Bundled " + name + " (" + size + " bytes) from lmfpd@" + version);
 }
+// Go embed cannot traverse into a different package. Stage a generated copy
+// beside the internal/plugin bootstrap rather than making core import plugins/.
+const embedded = path.join(root, "internal", "plugin", "bundled-lm-detector", "runtime");
+await rm(embedded, {recursive: true, force: true});
+await mkdir(embedded, {recursive: true});
+for (const file of ["index.js", "package.json"]) {
+  await copyFile(path.join(plugin, file), path.join(embedded, file));
+}
+for (const directory of ["page", "shared", "data"]) {
+  await cp(path.join(plugin, directory), path.join(embedded, directory), {recursive: true});
+}
+console.log("Prepared offline LM Detector Go embed payload.");

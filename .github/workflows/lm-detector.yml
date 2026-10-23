@@ -9,6 +9,7 @@ on:
       - 'internal/cli/bundled_lm_detector.go'
       - 'internal/cli/main.go'
       - 'internal/plugin/bundled*.go'
+      - 'internal/plugin/bundled-lm-detector/**'
   pull_request:
     paths:
       - 'plugins/lm-detector/**'
@@ -36,7 +37,8 @@ jobs:
       - name: Test offline bundle registration and upgrades
         env:
           CGO_ENABLED: '0'
-        run: go test -tags nogui -count=1 ./internal/plugin -run '^TestBundled' && go test -tags nogui -count=1 ./plugins/lm-detector -run '^TestMaterialize'
+          LM_DETECTOR_REQUIRED: '1'
+        run: go test -tags nogui -count=1 ./internal/plugin -run '^(TestBundled|TestMaterialize|TestPreparedBundle)'
       - name: Check Go built-in plugin import invariants
         env:
           CGO_ENABLED: '0'

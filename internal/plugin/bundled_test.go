@@ -5,6 +5,8 @@ import (
     "os"
     "path/filepath"
     "testing"
+    "testing/fstest"
+    "io/fs"
 
     "github.com/yetone/magpie/internal/settings"
 )
@@ -61,4 +63,38 @@ func TestBundledFailsClosedOnInvalidPluginList(t *testing.T) {
     }
     b, err := os.ReadFile(listPath())
     if err != nil || string(b) != "{bad json" { t.Fatalf("invalid config overwritten: %q / %v", b, err) }
+}
+
+func TestMaterializeBundledCopyKeepsStableName(t *testing.T) {
+    files := fstest.MapFS{
+        "index.js": {Data: []byte("export const Fingerprint = () => ({})")},
+        "page/index.html": {Data: []byte("<html></html>")},
+        "data/unified_bank.json": {Data: []byte("{}")},
+    }
+    root := t.TempDir()
+    a, err := materializeLMDetector(files, root)
+    if err != nil { t.Fatal(err) }
+    b, err := materializeLMDetector(files, root)
+    if err != nil || a != b { t.Fatalf("not idempotent: %s %s %v", a,b,err) }
+    if filepath.Base(a) != "lm-detector" { t.Fatalf("unstable plugin short name: %s", a) }
+    if _, err := os.Stat(filepath.Join(a, ".complete")); err != nil { t.Fatal(err) }
+    files["index.js"] = &fstest.MapFile{Data: []byte("changed")}
+    next, err := materializeLMDetector(files, root)
+    if err != nil || next == a { t.Fatalf("changed bundle must get a new directory: %s / %v", next,err) }
+    old, err := fs.ReadFile(os.DirFS(a), "index.js")
+    if err != nil || string(old) != "export const Fingerprint = () => ({})" { t.Fatalf("old bundle mutated: %q / %v", old,err) }
+}
+
+func TestPreparedBundleBootstrap(t *testing.T) {
+    if _, err := lmDetectorFiles.ReadFile("bundled-lm-detector/runtime/data/unified_bank.json"); err != nil {
+        if os.Getenv("LM_DETECTOR_REQUIRED") == "1" { t.Fatalf("build preparation missing: %v", err) }
+        t.Skip("build-time reference assets have not been prepared in this source checkout")
+    }
+    storeSandbox(t)
+    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
+    l := Load()
+    if len(l.Plugins) != 1 { t.Fatalf("want one auto-registered plugin: %+v", l.Plugins) }
+    if filepath.Base(l.Plugins[0].Spec) != "lm-detector" { t.Fatalf("unstable plugin spec: %+v", l.Plugins[0]) }
+    w, _ := Window(Target(l.Plugins[0].Spec))
+    if w == nil || w.Page == nil || len(w.Actions) != 1 { t.Fatalf("missing Page/Provider action in bundled plugin: %+v", w) }
 }

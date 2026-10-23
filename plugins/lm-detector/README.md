@@ -6,7 +6,7 @@ This plugin lives in the Magpie fork source tree under `plugins/lm-detector`. It
 
 **Building from source:** Run `node .github/scripts/prepare-lm-detector.mjs` from the repository root *before* `go build`. This build-only script fetches the pinned `lmfpd` data package; its reference files are embedded in the compiled binary. A plain Go build that omits this step will intentionally report a missing bundled asset rather than silently start a broken detector. CI and the fork's Windows release workflow run the preparation automatically.
 
-The plugin remains a **Bun Page + tool plugin**, not a Go-native detector. Its activation follows the existing Plugins list: disabling it remains disabled after upgrades; removing it prevents automatic reinstallation. A user who already installed this exact local plugin is migrated to the prebundled copy while preserving Off, options and provider preferences.
+The build script stages an ignored copy at `internal/plugin/bundled-lm-detector/runtime/` for Go embedding; `internal/plugin` is the only runtime package involved. The plugin remains a **Bun Page + tool plugin**, not a Go-native detector. Its activation follows the existing Plugins list: disabling it remains disabled after upgrades; removing it prevents automatic reinstallation. A user who already installed this exact local plugin is migrated to the prebundled copy while preserving Off, options and provider preferences.
 
 The build-time pinned `lmfpd` data package supplies **only** `data/unified_bank.json` and `data/shared_detector.bin`; the challenge generator, features, positional classifier, detector decoding and scoring are vendored directly from `Ikaleio/lm-detector/shared` and executed in the plugin host. No CLI imports or subprocesses are used.
 

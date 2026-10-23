@@ -14,10 +14,8 @@ go test -run '^$' ./...
 if ($LASTEXITCODE -ne 0) { throw 'Windows compile-all tests failed' }
 
 Write-Host '=== Offline bundle bootstrap and migration regressions ==='
-go test -count=1 ./internal/plugin -run '^TestBundled'
+go test -count=1 ./internal/plugin -run '^(TestBundled|TestMaterialize|TestPreparedBundle)'
 if ($LASTEXITCODE -ne 0) { throw 'bundled plugin registration failed' }
-go test -count=1 ./plugins/lm-detector -run '^TestMaterialize'
-if ($LASTEXITCODE -ne 0) { throw 'bundle extraction failed' }
 
 Write-Host '=== Fork Codex, GUI and plugin permission regressions ==='
 # Deliberately do not execute TestCoreScriptBudget: this is an upstream
