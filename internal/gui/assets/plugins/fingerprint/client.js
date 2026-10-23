@@ -20,6 +20,7 @@ magpie.plugin("fingerprint", (ctx) => {
   let timer = null;
   let busy = false;
   let models = [];
+  let preferredProvider = "";
 
   function tr(value) {
     return typeof t === "function" ? t(value) : value;
@@ -51,6 +52,10 @@ magpie.plugin("fingerprint", (ctx) => {
       select.append(option);
     }
     if (list.includes(chosen)) select.value = chosen;
+    else if (preferredProvider) {
+      const option = list.find(id => id.startsWith(preferredProvider + "/"));
+      if (option) select.value = option;
+    }
     runButton.disabled = busy || !select.value;
   }
   function jobRow(job) {
@@ -177,6 +182,10 @@ magpie.plugin("fingerprint", (ctx) => {
     refresh() {
       return refresh();
     },
+  });
+  ctx.actions.add("provider", "Detect model fingerprint", ({ provider } = {}) => {
+    preferredProvider = provider?.id || "";
+    Promise.resolve(show("fingerprint")).catch(e => console.error("[fingerprint] open", e));
   });
   ctx.onDispose(() => {
     if (timer) clearInterval(timer);
