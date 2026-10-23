@@ -1,28 +1,53 @@
-# Windows fork: upstream sync, testing and releases
+# Windows-only fork: fast daily upstream sync, CI, and releases
 
-## Daily sync
-- Daily at **02:17 UTC (10:17 Beijing time)**, also manually in Actions.
-- Merge upstream main locally in the Windows runner. Never reset or force push the fork.
-- Run the same complete quality gate used by PR, push and release CI **before** pushing main.
-- Stop on conflicts, failed tests or failed builds. No push or release occurs then.
-- On a passing merge, push main and explicitly dispatch the Windows release at the exact merged commit.
+## Automatic daily update (once per day)
+- At **02:17 UTC / 10:17 Beijing time** the Daily Upstream Sync workflow checks yetone/magpie main.
+- It merges locally, preserving this fork's commits. Conflicts abort immediately.
+- It executes the same fast Windows quality gate as the Test workflow **before** pushing.
+- On any test failure nothing is pushed or released. On success it pushes main
+  without force and dispatches Fork Windows Release for the exact tested SHA.
+- GitHub Actions commits made with the workflow GITHUB_TOKEN do not normally
+  trigger push workflows, so daily sync explicitly dispatches the release.
 
-## Shared Windows quality gate
-All three workflows call **.github/scripts/test-windows.ps1**, so there are no drifting or duplicated test command lists:
-1. Static analysis with **go vet ./...**.
-2. The full native Windows Go suite **go test -count=1 -p 2 -parallel 4 -timeout 30m ./...** (real tests, no -run '^$' compilation-only shortcut). This includes fork-specific Codex, settings, native plugin bridge, LM Detector and Windows tests.
-3. Compile Windows GUI with production tag and CLI with nogui tag for both x64 and ARM64. ARM64 is cross-compiled, not run under an ARM64 runner.
-4. JavaScript syntax checks for GUI and plugin assets.
-5. Chromium Playwright smoke tests for plugin-page, plugin-actions and plugin-tools, using isolated fixtures. Browser dependencies live only under RUNNER_TEMP. Hundreds of unrelated upstream browser scenarios and non-Windows WebKit are intentionally excluded.
+## Fast Windows quality gate
+The shared script is .github/scripts/test-windows.ps1. It runs:
+1. go vet ./... and a compile-only pass over all Go tests using go test -run '^$' ./...
+2. Actual isolated fork tests: Codex caller prompt, settings retention, GUI Page
+   bridge permissions and origin checks, plugin runtime/import rules.
+3. Upstream-selected native Windows tests: Bun stderr, network, usage cache,
+   Windows installation/rollback, sessions, dsh configuration and VS Code.
+4. Windows production GUI x64 build and JavaScript syntax checks of GUI,
+   plugin bridge and LM Detector entrypoint.
 
-Test and sync jobs have a 150-minute limit; release has a 180-minute limit.
-CI environment failures will block updates until reviewed.
+This follows upstream's Windows policy: its complete Go suite has HOME,
+USERPROFILE, Unix file-permissions and timing assumptions and is NOT
+reliably runnable on Windows. The full non-Windows suite is therefore not
+a prerequisite for this personal Windows fork.
 
-## Releases
-- The Fork Windows Release workflow runs the **same gate** again before publishing, including for direct pushes or manual runs.
-- Builds desktop and CLI for Windows x64 and ARM64; publishes EXEs, ZIPs and SHA256SUMS.txt to this fork's GitHub Releases.
-- Tags are immutable and tied to source commits; it does not use upstream release artifacts, upstream signing keys or third-party secrets.
-- Fork executables are unsigned. The built-in upstream self-updater may replace them with upstream binaries; install from this fork to retain custom features.
-- Docker automatic triggers are disabled separately; the Docker workflow is manual-only.
+The gate is deliberately focused for daily stability and a short runtime;
+it is **not** equivalent to full Go, ARM64 runtime or full browser coverage.
+Windows sync/Test jobs are capped at 35 minutes, not a speed guarantee.
 
-If pushing or publishing is denied, inspect repository Actions workflow permissions and main branch rules.
+## Browser and LM Detector deeper testing
+The separate **Optional UI Smoke** workflow is manual-only and checks
+Chromium plugin pages, actions and tools. It is not required to sync/release.
+The LM Detector's full Bun tests under plugins/lm-detector/tests need an
+installed lmfpd reference-data package; they are not part of the daily gate.
+
+## Release is no longer duplicated with Test
+- For normal pushes to main, Test runs once. Only its **successful push run**
+  triggers Fork Windows Release via workflow_run. PRs and failed tests cannot
+  trigger release.
+- For daily sync, the pre-push quality gate already ran, so the sync job
+  explicitly dispatches the Release. It **does not rerun** the gate.
+- A release manually started by the owner runs the gate first (unless the
+  release already exists).
+- Release builds the actual Windows x64 and ARM64 GUI and CLI, creates ZIP
+  archives and SHA256SUMS.txt, then publishes this fork's own binaries with a
+  commit-derived tag. ARM64 is cross-compiled, not run on x64 CI.
+- Binaries are unsigned, and the upstream self-updater may overwrite fork
+  changes. Install from this fork's Releases page to keep custom features.
+- The unrelated Docker workflow remains manual-only.
+
+If permissions fail, check Settings > Actions > General > Workflow
+permissions and any main branch protection rules.

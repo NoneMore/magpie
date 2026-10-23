@@ -13,12 +13,12 @@ concurrency:
 permissions:
   contents: read
 
-# Windows only: full Go tests plus targeted Chromium plugin UI tests.
+# Windows only: upstream-compatible native tests plus fork-specific regressions.
 jobs:
   windows:
     name: Windows
     runs-on: windows-latest
-    timeout-minutes: 150
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,6 +31,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - name: Full Windows quality gate
+      - name: Fast Windows quality gate
         shell: pwsh
         run: ./.github/scripts/test-windows.ps1

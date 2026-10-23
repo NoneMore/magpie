@@ -1,0 +1,32 @@
+name: Optional UI Smoke
+
+# Run only on explicit request. Not part of daily upstream sync.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium:
+    name: Chromium Plugin UI
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run fork-sensitive browser UI fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deps = Join-Path $env:RUNNER_TEMP 'magpie-playwright'
+          npm install --prefix $deps --no-save --no-audit --no-fund playwright@1.62.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_PATH = Join-Path $deps 'node_modules'
+          node (Join-Path $env:NODE_PATH 'playwright/cli.js') install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:BROWSER = 'chromium'
+          node --test --test-concurrency=1 internal/gui/tests/plugin-page.test.cjs internal/gui/tests/plugin-actions.test.cjs internal/gui/tests/plugin-tools.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

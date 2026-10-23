@@ -17,7 +17,7 @@ concurrency:
 jobs:
   sync:
     runs-on: windows-latest
-    timeout-minutes: 150
+    timeout-minutes: 35
     steps:
       - name: Checkout fork main
         uses: actions/checkout@v4

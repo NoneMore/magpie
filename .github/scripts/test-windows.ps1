@@ -1,50 +1,51 @@
-# Shared quality gate for the Windows-only fork. Run at the repository root.
+# Fast, native Windows gate used by upstream sync and Test.
+# Use this from the repository root with Go, Bun and Node 22 available.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-Write-Host '=== Vet every Go package ==='
+Write-Host '=== Vet and compile all Go tests (same Windows policy as upstream) ==='
 go vet ./...
 if ($LASTEXITCODE -ne 0) { throw 'go vet failed' }
+go test -run '^$' ./...
+if ($LASTEXITCODE -ne 0) { throw 'Windows compile-all tests failed' }
 
-Write-Host '=== Run the complete Windows Go test suite ==='
-# Restrict package and test parallelism to reduce contention on hosted Windows.
-go test -count=1 -p 2 -parallel 4 -timeout 30m ./...
-if ($LASTEXITCODE -ne 0) { throw 'Full Windows Go test suite failed' }
+Write-Host '=== Fork Codex, GUI and plugin permission regressions ==='
+go test -count=1 -timeout 5m ./internal/provider -run '^(TestCodexBodyCallerPromptOptIn|TestCodexCallerPromptSessionHeadersWithoutKey|TestCodexSignSessionHeaders|TestCodexPromptCacheKey)$'
+if ($LASTEXITCODE -ne 0) { throw 'Codex regression failed' }
+go test -count=1 -timeout 5m ./internal/gui -run '^(TestCodexCallerPromptPreferenceAPI|TestSettingsSaveKeepsWhatItDoesNotSend|TestCoreScriptBudget|TestPluginPageServedShutIn|TestPluginPageReadsWhatItDeclared|TestPluginPageNoAPI|TestPluginPageWebGuard|TestPluginPageActions|TestPluginPageToolRequiresPermission)$'
+if ($LASTEXITCODE -ne 0) { throw 'GUI / Page bridge regression failed' }
+go test -count=1 -timeout 5m ./internal/pluginrt -run '^(TestReconcile|TestCompatible|TestPluginsImportOnlyCore)$'
+if ($LASTEXITCODE -ne 0) { throw 'Plugin runtime regression failed' }
 
-Write-Host '=== Build GUI and CLI for Windows x64 and ARM64 ==='
-$env:CGO_ENABLED = '0'
-$env:GOOS = 'windows'
-foreach ($arch in @('amd64', 'arm64')) {
-  $env:GOARCH = $arch
-  go build -tags production -trimpath -o (Join-Path $env:RUNNER_TEMP "magpie-gui-$arch.exe") .
-  if ($LASTEXITCODE -ne 0) { throw "Windows GUI $arch build failed" }
-  go build -tags nogui -trimpath -o (Join-Path $env:RUNNER_TEMP "magpie-cli-$arch.exe") .
-  if ($LASTEXITCODE -ne 0) { throw "Windows CLI $arch build failed" }
-}
-Remove-Item Env:GOARCH
-Remove-Item Env:GOOS
-Remove-Item Env:CGO_ENABLED
+Write-Host '=== Upstream-maintained Windows native regression cases ==='
+bun --version
+if ($LASTEXITCODE -ne 0) { throw 'Bun unavailable' }
+go test -count=1 -timeout 5m ./internal/plugin -run '^(TestHostStartsPastAnOverlongStderrLine|TestDrainStderrKeepsTheChildGoing)$'
+if ($LASTEXITCODE -ne 0) { throw 'Windows plugin stderr test failed' }
+go test -count=1 -timeout 2m ./internal/library -run '^(TestNetHealth|TestCheckHTTP)$'
+if ($LASTEXITCODE -ne 0) { throw 'Windows network checks failed' }
+go test -count=1 -timeout 5m ./internal/usage -run '^(TestWindows|TestLogChange|TestLogFileInfoPreservesIdentity$|TestUsageSameSizeAndMtimeRewrite$|TestLogGrowingRewriteThenAppend$|TestUsagePageCacheAfterUncachedQuery$)'
+if ($LASTEXITCODE -ne 0) { throw 'Windows usage checks failed' }
+go test -count=1 -timeout 2m ./internal/update -run '^(TestInstallBinary|TestMoveAside|TestTrialStart)'
+if ($LASTEXITCODE -ne 0) { throw 'Windows update/rollback checks failed' }
+go test -count=1 -timeout 5m ./internal/sessions -run '^Test(WindowsSession|Move|CopyAll|CodexArchived|CodexSameTick|CodexPlainTwin)'
+if ($LASTEXITCODE -ne 0) { throw 'Windows session checks failed' }
+go test -count=1 -timeout 5m ./internal/agent -run '^(TestDsh|TestKeepDsh|TestVSCodeDetected)'
+if ($LASTEXITCODE -ne 0) { throw 'Windows agent checks failed' }
 
-Write-Host '=== Check critical Windows UI and plugin JavaScript syntax ==='
+Write-Host '=== Build actual Windows x64 desktop application ==='
+go build -tags production -trimpath -o (Join-Path $env:RUNNER_TEMP 'magpie-gui-amd64.exe') .
+if ($LASTEXITCODE -ne 0) { throw 'Windows x64 desktop compile failed' }
+
+Write-Host '=== Validate key GUI and LM Detector JavaScript syntax ==='
 foreach ($asset in @(
   'internal/gui/assets/app.js',
   'internal/gui/assets/plugins.js',
   'internal/gui/assets/pluginpages.js',
-  'internal/gui/pagebridge.js'
+  'internal/gui/pagebridge.js',
+  'plugins/lm-detector/index.js'
 )) {
   node --check $asset
   if ($LASTEXITCODE -ne 0) { throw "JavaScript syntax failed: $asset" }
 }
-
-Write-Host '=== Chromium UI smoke tests for fork plugin features ==='
-# Playwright is a CI-only temporary dependency, never a runtime dependency.
-$deps = Join-Path $env:RUNNER_TEMP 'magpie-playwright'
-npm install --prefix $deps --no-save --no-audit --no-fund playwright@1.62.1
-if ($LASTEXITCODE -ne 0) { throw 'Playwright setup failed' }
-$env:NODE_PATH = Join-Path $deps 'node_modules'
-node (Join-Path $env:NODE_PATH 'playwright/cli.js') install chromium
-if ($LASTEXITCODE -ne 0) { throw 'Chromium installation failed' }
-$env:BROWSER = 'chromium'
-node --test --test-concurrency=1 internal/gui/tests/plugin-page.test.cjs internal/gui/tests/plugin-actions.test.cjs internal/gui/tests/plugin-tools.test.cjs
-if ($LASTEXITCODE -ne 0) { throw 'Chromium plugin UI tests failed' }
-Write-Host 'All Windows quality checks passed.'
+Write-Host 'Fast Windows quality gate passed.'

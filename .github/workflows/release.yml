@@ -1,13 +1,17 @@
 name: Fork Windows Release
 
 # Never delegate to yetone/magpie-releases: its builds omit fork changes.
+# Direct main pushes: publish only after the Test workflow succeeds.
+# Daily sync: its runner tests before pushing, then dispatches this workflow.
 on:
-  push:
+  workflow_run:
+    workflows: ['Test']
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
       source_sha:
-        description: 'Optional full fork commit SHA (defaults to checked-out ref)'
+        description: 'Optional fork commit SHA (defaults to current branch)'
         required: false
         type: string
 
@@ -20,14 +24,34 @@ concurrency:
 
 jobs:
   windows:
+    # Never release code from a PR, a failed test, or a different repository.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 65
     steps:
       - name: Checkout fork revision
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.source_sha || github.sha }}
           fetch-depth: 0
+
+      - name: Require release commit to be on fork main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "Release source is not a commit on fork main" >&2
+            exit 1
+          }
 
       - name: Identify immutable release
         id: meta
@@ -55,19 +79,21 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        if: steps.meta.outputs.exists != 'true'
+        if: steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Set up Bun
-        if: steps.meta.outputs.exists != 'true'
+        if: steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
 
-      - name: Full Windows gate before release
-        if: steps.meta.outputs.exists != 'true'
+      # Automatic release already passed Test (direct push) or the sync gate.
+      # An owner-started manual release is verified here before publishing.
+      - name: Gate manually requested Windows releases
+        if: steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         shell: pwsh
         run: ./.github/scripts/test-windows.ps1
 
