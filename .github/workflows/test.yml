@@ -17,12 +17,12 @@ permissions:
   contents: read
 
 jobs:
-  # Keep pull-request feedback focused and independent of GTK/WebKitGTK downloads.
+  # Check the Windows-first development path quickly on pull requests.
   # The full platform, race and release checks still run on main or manually.
   pr:
     if: github.event_name == 'pull_request'
-    name: PR hooks (nogui)
-    runs-on: ubuntu-latest
+    name: PR hooks (Windows, nogui)
+    runs-on: windows-latest
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +40,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Prepared and gateway hook regressions
+        shell: bash
         run: |
           go test -count=1 -timeout 5m -tags nogui ./internal/plugin ./internal/gateway \
             -run '^(TestPrepared|TestGatewayHook|TestGatewayRun|TestAsyncGateway)'
