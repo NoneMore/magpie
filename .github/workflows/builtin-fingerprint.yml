@@ -34,6 +34,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Verify pinned lm-detector package installs and launches
+        timeout-minutes: 8
+        run: bun x --bun lmfpd@0.0.1790172702647 --help
       - name: JavaScript syntax
         run: |
           node --check internal/gui/assets/plugins/fingerprint/client.js
