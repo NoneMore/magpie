@@ -51,8 +51,11 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		}
 		req.Header.Set("Accept", "text/event-stream")
 		sessionHeaders(req.Header, body)
-		if settings.Shared().CodexCallerPrompt {
-			callerSessionHeaders(req.Header, body)
+		if settings.Shared().CodexCallerPrompt && req.Context().Value(codexCallerSessionSignedKey{}) == nil {
+			if callerSessionHeaders(req.Header, body) {
+				// Remember this request, not the key sent to the backend.
+				*req = *req.WithContext(context.WithValue(req.Context(), codexCallerSessionSignedKey{}, true))
+			}
 		}
 		return nil
 	}
@@ -84,6 +87,8 @@ var codexUA struct {
 	os string
 }
 
+type codexCallerSessionSignedKey struct{}
+
 // callerCacheKey isolates the caller-owned prompt's cache without changing
 // its identity between turns.
 func callerCacheKey(key string) string {
@@ -96,7 +101,7 @@ func callerCacheKey(key string) string {
 // session identity. Without a cache key, codexBody cannot use the session
 // headers because it only receives the body. This runs after sessionHeaders
 // and never fabricates a session for requests with no session headers.
-func callerSessionHeaders(h http.Header, body []byte) {
+func callerSessionHeaders(h http.Header, body []byte) bool {
 	var v struct {
 		Key          string `json:"prompt_cache_key"`
 		Instructions string `json:"instructions"`
@@ -106,15 +111,18 @@ func callerSessionHeaders(h http.Header, body []byte) {
 		v.Instructions == codexInstructions(v.Model) {
 		// An empty original caller prompt was already replaced by the
 		// native one, and must retain the native session identity.
-		return
+		return false
 	}
 	// Preserve distinct session and thread identities for callers that
 	// supplied both; unlike body keys, their two headers need not agree.
+	changed := false
 	for _, name := range []string{"session-id", "thread-id"} {
 		if key := h.Get(name); key != "" {
 			h.Set(name, callerCacheKey(key))
+			changed = true
 		}
 	}
+	return changed
 }
 
 // codexUserAgent is the User-Agent Codex CLI of version v sends:

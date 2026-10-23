@@ -21,7 +21,7 @@ func TestCodexCallerPromptPreferenceAPI(t *testing.T) {
 
 	h := Handler(nil, nil)
 	var state struct {
-		On bool `json:"codexCallerPrompt"`
+		On bool `json:"codexCallerPromptOn"`
 	}
 	call := func(method, path, body string) int {
 		t.Helper()

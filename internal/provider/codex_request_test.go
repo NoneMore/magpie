@@ -258,6 +258,12 @@ func TestCodexCallerPromptSessionHeadersWithoutKey(t *testing.T) {
 		if err := p.Sign(context.Background(), req, Responses, prepared); err != nil {
 			t.Fatal(err)
 		}
+		if withHeaders {
+			// Re-signing the same keyless request must not double-namespace its headers.
+			if err := p.Sign(context.Background(), req, Responses, prepared); err != nil {
+				t.Fatal(err)
+			}
+		}
 		return req.Header.Get("session-id"), req.Header.Get("thread-id"), prepared
 	}
 	session, thread, prepared := sign(body, true)
