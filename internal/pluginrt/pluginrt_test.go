@@ -132,7 +132,9 @@ func TestPluginsImportOnlyCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// and every plugin is gathered
+	// Every Go built-in plugin is gathered by plugins/all. Source-only Bun
+	// plugins (e.g. plugins/lm-detector) are installed separately and have no
+	// non-test Go implementation, so must not be imported as built-ins.
 	dirs, err := os.ReadDir(filepath.Join(root, "plugins"))
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +144,21 @@ func TestPluginsImportOnlyCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range dirs {
-		if d.IsDir() && d.Name() != "all" && !strings.Contains(string(all), `"`+mod+d.Name()+`"`) {
+		if !d.IsDir() || d.Name() == "all" {
+			continue
+		}
+		entries, err := os.ReadDir(filepath.Join(root, "plugins", d.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		isGoPlugin := false
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+				isGoPlugin = true
+				break
+			}
+		}
+		if isGoPlugin && !strings.Contains(string(all), `"`+mod+d.Name()+`"`) {
 			t.Errorf("plugins/all doesn't import plugins/%s", d.Name())
 		}
 	}
