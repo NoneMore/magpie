@@ -1,11 +1,8 @@
 name: Docker
 
+# Disabled automatic Docker CI for this Windows-only fork.
+# It can still be run manually if an image is ever needed.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
-    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml]
   workflow_dispatch:
 
 env:
