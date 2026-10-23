@@ -237,11 +237,14 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
 
 ### Personal fork: Codex caller-owned instructions
 
-For the **built-in ChatGPT/Codex subscription adapter only**, setting
-`MAGPIE_CODEX_CALLER_PROMPT=1` in the magpie process environment opts in to
-using the client's non-blank top-level `instructions` in place of Codex's
-native prompt. Set it before starting magpie (including when using the GUI);
-unset it or set anything other than `1` to keep the unchanged default:
+For the **built-in ChatGPT/Codex subscription adapter only**, the Codex agent's
+settings sheet offers **Caller-owned Codex instructions (experimental)**, saved
+in `settings.json` as `codexCallerPrompt`. On uses the client's non-blank
+top-level `instructions` in place of Codex's native prompt, immediately for
+new requests; Off restores the unchanged default. Before a choice is saved,
+the original `MAGPIE_CODEX_CALLER_PROMPT=1` process environment variable still
+opts in (anything other than `1` keeps the default). An explicit UI Off wins
+over that environment variable. By default:
 Codex's native instructions with the caller's instructions added as an
 initial developer message. With no caller instructions, the native prompt
 remains, even when the opt-in is enabled. Independent developer items in
@@ -250,7 +253,9 @@ remains, even when the opt-in is enabled. Independent developer items in
 Under the caller policy, `prompt_cache_key` is deterministically
 namespaced into a separate session key, including a key provided by the
 client. Codex's signed `session-id` and `thread-id` headers use that
-new value. Each policy's cache stays separate, but do not switch policies
+new value. For a keyless request with caller instructions but existing session
+headers, signing namespaces those headers as well; absent headers are left
+absent. Each policy's cache stays separate, but do not switch policies
 during an active conversation. This is not a global system-prompt setting
 and does not change Claude, other providers, plugins or the native Codex
 backend passthrough. It is intentionally unsupported by upstream: changing
