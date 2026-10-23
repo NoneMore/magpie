@@ -51,7 +51,9 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		}
 		req.Header.Set("Accept", "text/event-stream")
 		sessionHeaders(req.Header, body)
-		if settings.Shared().CodexCallerPrompt && req.Context().Value(codexCallerSessionSignedKey{}) == nil {
+		if settings.Shared().CodexCallerPrompt &&
+			req.Context().Value(codexNativePassthroughKey{}) == nil &&
+			req.Context().Value(codexCallerSessionSignedKey{}) == nil {
 			if callerSessionHeaders(req.Header, body) {
 				// Remember this request, not the key sent to the backend.
 				*req = *req.WithContext(context.WithValue(req.Context(), codexCallerSessionSignedKey{}, true))
@@ -88,6 +90,15 @@ var codexUA struct {
 }
 
 type codexCallerSessionSignedKey struct{}
+
+// codexNativePassthroughKey marks a native Codex relay. It does not go through
+// codexBody, so its existing session and thread IDs must not be rewritten.
+type codexNativePassthroughKey struct{}
+
+// WithNativeCodexPassthrough marks a request relayed without codexBody.
+func WithNativeCodexPassthrough(ctx context.Context) context.Context {
+	return context.WithValue(ctx, codexNativePassthroughKey{}, true)
+}
 
 // callerCacheKey isolates the caller-owned prompt's cache without changing
 // its identity between turns.

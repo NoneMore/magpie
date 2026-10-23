@@ -282,6 +282,26 @@ func TestCodexCallerPromptSessionHeadersWithoutKey(t *testing.T) {
 	if s, th, _ := sign([]byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`), true); s != "thread-1" || th != "child-1" {
 		t.Fatalf("empty caller changed native session: %q %q", s, th)
 	}
+	// Native Codex passthrough bypasses codexBody; the experimental policy
+	// must not rewrite caller-supplied session headers along that path.
+	t.Run("native passthrough", func(t *testing.T) {
+		ctx := WithNativeCodexPassthrough(context.Background())
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Responses+"/responses", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("session-id", "native-session")
+		req.Header.Set("thread-id", "native-thread")
+		if err := p.Sign(ctx, req, Responses, body); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("session-id"); got != "native-session" {
+			t.Errorf("native session-id changed: %q", got)
+		}
+		if got := req.Header.Get("thread-id"); got != "native-thread" {
+			t.Errorf("native thread-id changed: %q", got)
+		}
+	})
 	s.CodexCallerPrompt = false
 	if err := settings.Save(s); err != nil {
 		t.Fatal(err)
