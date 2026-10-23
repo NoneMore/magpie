@@ -249,3 +249,142 @@ test("cancel aborts active SSE readers without scoring partial output",async()=>
     expect(result.analysis).toBeNull();
   } finally {globalThis.fetch=originalFetch;}
 });
+
+test("effort maps to the correct API field without adding output limits",async()=>{
+  for(const format of ["chat","responses"]) {
+    const seen=[];
+    fakeGateway(async(url,init)=>{
+      seen.push(JSON.parse(init.body));
+      return format==="chat"
+        ? Response.json({choices:[{finish_reason:"stop",message:{content:validResponse}}]})
+        : Response.json({status:"completed",output:[{type:"message",
+            content:[{type:"output_text",text:validResponse}]}]});
+    });
+    try {
+      const job=await tools.start.execute({model:fixtureModel,format,effort:"xhigh",count:1});
+      const done=await settled(job.jobId);
+      expect(done.state).toBe("done");
+      expect(done.count).toBe(1);
+      expect(done.rounds).toHaveLength(1);
+      expect(done.rounds[0].analysis.probability).toBeNull();
+      expect(seen).toHaveLength(1);
+      if(format==="chat") {
+        expect(seen[0].reasoning_effort).toBe("xhigh");
+        expect(seen[0].reasoning).toBeUndefined();
+      } else {
+        expect(seen[0].reasoning).toEqual({effort:"xhigh"});
+        expect(seen[0].reasoning_effort).toBeUndefined();
+      }
+      expect(seen[0].max_output_tokens).toBeUndefined();
+    } finally {globalThis.fetch=originalFetch;}
+  }
+});
+
+test("count, parallel and repeat respect per-round limits and finish sequentially",async()=>{
+  let active=0,maxActive=0,posts=0;
+  fakeGateway(async()=>{
+    posts++;active++;maxActive=Math.max(active,maxActive);
+    await Bun.sleep(12);
+    active--;
+    return Response.json({status:"completed",output:[{type:"message",
+      content:[{type:"output_text",text:validResponse}]}]});
+  });
+  try {
+    const job=await tools.start.execute({model:fixtureModel,count:3,parallel:2,repeat:2});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.completed).toBe(6);
+    expect(done.round).toBe(2);
+    expect(done.rounds).toHaveLength(2);
+    expect(done.rounds.every(r=>r.samples.length===3 && r.analysis)).toBe(true);
+    expect(posts).toBe(6);
+    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(maxActive).toBeGreaterThanOrEqual(1);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("invalid UI options and strict with count below three are rejected before any request",async()=>{
+  let posts=0;
+  fakeGateway(async()=>{posts++;return Response.json({});});
+  try {
+    const bad=[
+      {timeout:0},{timeout:601},{count:0},{count:4},
+      {parallel:0},{parallel:4},{repeat:0},{repeat:21},
+      {strict:true,count:1},{strict:true,count:2},
+      {effort:"unsafe\nvalue"}
+    ];
+    for(const options of bad) {
+      await expect(tools.start.execute({model:fixtureModel,...options})).rejects.toThrow();
+    }
+    expect(posts).toBe(0);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("strict streaming does not stop at the integer cap",async()=>{
+  let received=0;
+  fakeGateway(async()=>{
+    received++;
+    return chunkedSSE([
+      eventData({choices:[{index:0,delta:{content:Array(400).fill(1).join(", ")+", "}}]}),
+      eventData({choices:[{index:0,delta:{},finish_reason:"stop"}]}),
+      "data: [DONE]\r\n\r\n"
+    ]);
+  });
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",
+      count:3,parallel:2,strict:true,stream:true});
+    const done=await settled(job.jobId);
+    expect(received).toBe(3);
+    expect(done.state).toBe("done");
+    expect(done.strict).toBe(true);
+    expect(done.samples.every(s=>s.state==="complete" && s.count===s.expectedCount)).toBe(true);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("strict mode does not score a round with failed samples",async()=>{
+  fakeGateway(async()=>Response.json({status:"completed",output:[{type:"message",
+    content:[{type:"output_text",text:Array(15).fill(1).join(", ")}]}]}));
+  try {
+    const job=await tools.start.execute({model:fixtureModel,strict:true});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("failed");
+    expect(done.rounds).toHaveLength(1);
+    expect(done.rounds[0].analysis).toBeNull();
+    expect(done.rounds[0].error).toContain("Strict mode");
+    expect(done.samples.every(s=>s.state==="failed")).toBe(true);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("configured request timeout aborts stalled Gateway requests",async()=>{
+  fakeGateway(async(url,init)=>new Promise((resolve,reject)=>{
+    init.signal.addEventListener("abort",()=>reject(Error("aborted")),{once:true});
+  }));
+  try {
+    const job=await tools.start.execute({model:fixtureModel,count:1,timeout:0.1});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("failed");
+    expect(done.error).toContain("timed out (0.1s)");
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("SSE timeout clears after first nonempty body data, including heartbeat",async()=>{
+  fakeGateway(async()=>new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(": heartbeat\n\n"));
+      setTimeout(()=>{
+        controller.enqueue(new TextEncoder().encode(
+          eventData({choices:[{index:0,delta:{content:Array(280).fill(1).join(", ")}}]})+
+          eventData({choices:[{index:0,delta:{},finish_reason:"stop"}]})+
+          "data: [DONE]\n\n"));
+        controller.close();
+      },170);
+    }
+  }),{headers:{"content-type":"text/event-stream"}}));
+  try {
+    const job=await tools.start.execute({model:fixtureModel,count:1,
+      format:"chat",stream:true,timeout:0.1});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples[0].state).toBe("complete");
+  } finally {globalThis.fetch=originalFetch;}
+});
