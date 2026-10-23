@@ -10,7 +10,7 @@ const plugin = path.join(root, "plugins", "lm-detector");
 const version = "0.0.1792416845676";
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 execFileSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund",
-  "--no-save", "--no-package-lock", "lmfpd@" + version], {cwd: plugin, stdio: "inherit"});
+  "--no-save", "--no-package-lock", "lmfpd@" + version], {cwd: plugin, stdio: "inherit", shell: process.platform === "win32"});
 const source = path.join(plugin, "node_modules", "lmfpd");
 const manifest = JSON.parse(await readFile(path.join(source, "package.json"), "utf8"));
 if (manifest.version !== version) throw Error("Unexpected lmfpd version: " + manifest.version);
