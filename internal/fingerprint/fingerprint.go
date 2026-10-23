@@ -139,7 +139,7 @@ func activeLocked() int {
 }
 
 func validModel(model string) bool {
-	if len(model) < 3 || len(model) > 256 || strings.TrimSpace(model) != model || !strings.Contains(model, "/") {
+	if len(model) < 3 || len(model) > 256 || strings.TrimSpace(model) != model || strings.IndexByte(model, '/') < 1 || strings.HasSuffix(model, "/") || strings.HasPrefix(model, "group/") || strings.HasPrefix(model, "auto/") {
 		return false
 	}
 	for _, c := range model {
