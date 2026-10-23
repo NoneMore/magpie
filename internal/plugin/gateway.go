@@ -273,7 +273,7 @@ func GatewayPrepared(ctx context.Context, body []byte, info PreparedContext) []b
 	var out json.RawMessage
 	err = h.call(start, "gatewayRequest", map[string]any{
 		"operation": "prepared",
-		"body": json.RawMessage(body),
+		"body":      json.RawMessage(body),
 		"context":   info,
 	}, &out)
 	if err != nil || len(out) == 0 || out[0] != '{' || !json.Valid(out) {
