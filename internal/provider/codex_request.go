@@ -18,6 +18,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // A ChatGPT account's requests are made the way Codex CLI makes them, as
@@ -50,6 +51,11 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		}
 		req.Header.Set("Accept", "text/event-stream")
 		sessionHeaders(req.Header, body)
+		// Keyless clients may supply their own session headers. Keep them
+		// distinct from native Codex when the caller owns the prompt.
+		if settings.CodexCallerPromptOn() {
+			callerSessionHeaders(req.Header, body)
+		}
 		return nil
 	}
 }
@@ -78,6 +84,42 @@ func sessionHeaders(h http.Header, body []byte) {
 var codexUA struct {
 	sync.Once
 	os string
+}
+
+// callerCacheKey places a session in a policy-specific namespace, without
+// changing its identity between turns. Both body keys and header-only
+// sessions use the same transform.
+func callerCacheKey(key string) string {
+	hash := sha256.Sum256([]byte("codex-caller-prompt\\x00" + key))
+	id := hex.EncodeToString(hash[:])
+	return id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
+}
+
+// callerSessionHeaders partitions a caller-owned, keyless request's existing
+// session identity. Without a cache key, codexBody cannot use the session
+// headers because it only receives the body. This runs after sessionHeaders
+// and never fabricates a session for requests with no session headers.
+func callerSessionHeaders(h http.Header, body []byte) {
+	var v struct {
+		Key          string `json:"prompt_cache_key"`
+		Instructions string `json:"instructions"`
+		Model        string `json:"model"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.Key != "" || strings.TrimSpace(v.Instructions) == "" ||
+		v.Instructions == codexInstructions(v.Model) {
+		// An empty original caller prompt was already replaced by the
+		// native one, and must retain the native session identity.
+		return
+	}
+	key := h.Get("session-id")
+	if key == "" {
+		key = h.Get("thread-id")
+	}
+	if key != "" {
+		id := callerCacheKey(key)
+		h.Set("session-id", id)
+		h.Set("thread-id", id)
+	}
 }
 
 // codexUserAgent is the User-Agent Codex CLI of version v sends:
@@ -278,7 +320,7 @@ func codexBody(body []byte) []byte {
 	own, _ := m["instructions"].(string)
 	// Explicit personal-fork opt-in; empty caller instructions still use
 	// Codex's native prompt. No plugin or extra request-body pass is needed.
-	callerPrompt := os.Getenv("MAGPIE_CODEX_CALLER_PROMPT") == "1" && strings.TrimSpace(own) != ""
+	callerPrompt := settings.CodexCallerPromptOn() && strings.TrimSpace(own) != ""
 	if k, _ := m["prompt_cache_key"].(string); k == "" {
 		if k = conversationKey(own, input); k != "" {
 			m["prompt_cache_key"] = k
@@ -288,9 +330,7 @@ func codexBody(body []byte) []byte {
 	// including when the client supplies its own prompt_cache_key.
 	if callerPrompt {
 		if key, _ := m["prompt_cache_key"].(string); key != "" {
-			hash := sha256.Sum256([]byte("codex-caller-prompt\x00" + key))
-			id := hex.EncodeToString(hash[:])
-			m["prompt_cache_key"] = id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
+			m["prompt_cache_key"] = callerCacheKey(key)
 		}
 	}
 
