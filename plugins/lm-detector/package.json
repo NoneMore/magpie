@@ -30,5 +30,8 @@
       "providers:list",
       "tool:run"
     ]
+  },
+  "scripts": {
+    "test": "bun test tests/*.test.ts"
   }
 }
