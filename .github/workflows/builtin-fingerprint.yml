@@ -1,0 +1,76 @@
+name: Built-in fingerprint CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/builtin-fingerprint.yml'
+      - 'plugins/fingerprint/**'
+      - 'plugins/all/all.go'
+      - 'internal/fingerprint/**'
+      - 'internal/gui/fingerprint.go'
+      - 'internal/gui/api.go'
+      - 'internal/gui/assets/plugins/fingerprint/**'
+      - 'internal/gui/assets/index.html'
+      - 'internal/gui/assets/i18n.js'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fingerprint:
+    name: Fingerprint / Go 1.26 + JS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: |
+          node --check internal/gui/assets/plugins/fingerprint/client.js
+          node --check internal/gui/assets/plugins/fingerprint/i18n.js
+      - name: Go formatting
+        run: |
+          bad=$(gofmt -l internal/fingerprint/fingerprint*.go internal/gui/fingerprint.go plugins/fingerprint/fingerprint.go)
+          test -z "$bad" || { echo "Need gofmt: $bad"; exit 1; }
+      - name: Vet
+        run: go vet -tags nogui ./internal/fingerprint ./plugins/fingerprint ./internal/gui
+      - name: Unit and UI-integrity tests
+        run: go test -tags nogui -count=1 ./internal/fingerprint ./plugins/fingerprint ./internal/gui
+      - name: Build terminal Magpie
+        env:
+          CGO_ENABLED: '0'
+        run: go build -tags nogui -o /tmp/magpie-fingerprint .
+
+  windows:
+    name: Windows desktop (x64 / ARM64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Windows GUI using project's release target
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          make release-windows VERSION=0.0.0
+          test -s dist/magpie-windows-amd64.exe
+          test -s dist/magpie-windows-arm64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-builtin-fingerprint-windows
+          path: dist/magpie-windows-*.exe
+          retention-days: 14
