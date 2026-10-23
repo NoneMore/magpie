@@ -1,8 +1,8 @@
 # Built-in Model Fingerprint
 
-**Status:** Initial built-in integration for the Magpie fork. The UI and jobs
-run in Magpie; the actual classifier is the published lm-detector engine,
-pinned to a version and downloaded into Bun's package cache on first run.
+**Status:** Built-in Magpie UI and job backend with the unchanged, version-pinned
+lm-detector scoring engine and its calibration bank. The Windows Actions build
+bundles the engine next to the GUI executable for offline use.
 
 ## User flow
 
@@ -27,15 +27,15 @@ and the local `magpie` key. For non-default addresses, set
 `MAGPIE_FPD_GATEWAY_URL` and `MAGPIE_FPD_GATEWAY_KEY` on the Magpie
 process. The first lookup prefers the saved Gateway port in Magpie settings.
 
-**Important limitation:** this implementation runs the **published lmfpd
-package** using Magpie's Bun runtime. It contains the original reference
-bank and detector parameters, so it does not approximate the scoring
-algorithm; however, its algorithm has *not yet been rewritten as native Go*
-and the package is not embedded inside the Magpie executable. The first
-run needs network access for the pinned package and Bun (if Bun was not
-already cached). Offline use requires priming both caches. Packaging
-lm-detector's version-locked assets into release builds is a separate
-follow-up task.
+**Important limitation:** the classifier is the published **lmfpd package**
+(v0.0.1792416845676) executed using Magpie's Bun runtime, not a native Go
+reimplementation. CI's Windows ZIP includes `fingerprint-engine/node_modules`
+with the reference data. Keep that folder beside `magpie-windows-amd64.exe`
+(or `magpie-windows-arm64.exe`). In that layout there is no runtime npm
+installation; Magpie still needs its Bun runtime, which it downloads if
+not already cached. Developer-built standalone executables without the
+adjacent engine folder fall back to downloading the pinned npm package.
+A completely Go-native implementation would be a later rewrite.
 
 ## Security and behavior
 
