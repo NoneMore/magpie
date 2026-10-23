@@ -249,7 +249,7 @@ func TestCodexCallerPromptSessionHeadersWithoutKey(t *testing.T) {
 		return req.Header.Get("session-id"), req.Header.Get("thread-id"), prepared
 	}
 	session, thread, prepared := sign(body, true)
-	if session != callerCacheKey("thread-1") || thread != session ||
+	if session != callerCacheKey("thread-1") || thread != callerCacheKey("child-1") ||
 		strings.Contains(string(prepared), "prompt_cache_key") {
 		t.Fatalf("keyless caller policy: session %q thread %q body %s", session, thread, prepared)
 	}
