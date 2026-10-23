@@ -1253,8 +1253,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids below)
 		in.CodexAgentsV1 = cur.CodexAgentsV1
 		in.CodexCallerPrompt = cur.CodexCallerPrompt // own opt-in endpoint
-		in.FullContext = cur.FullContext // set on its own (full-context below)
-		in.CompactAt = cur.CompactAt     // and so is the threshold
+		in.FullContext = cur.FullContext             // set on its own (full-context below)
+		in.CompactAt = cur.CompactAt                 // and so is the threshold
 		// Codex's background compaction, set on its own (codex-async-compact below)
 		in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 		// Claude Desktop's list, set in its row on the Agents page
@@ -1478,7 +1478,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// Personal-fork Codex instruction policy. A saved On or Off overrides
 	// the legacy environment opt-in immediately for subsequent requests.
 	mux.HandleFunc("POST /api/settings/codex-caller-prompt", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ On *bool `json:"on"` }
+		var in struct {
+			On *bool `json:"on"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
