@@ -4,9 +4,9 @@
 // works. {name} slots are filled by t(str, vars).
 const I18N = {
   zh: {
+    "None": "无",
     "Model fingerprint": "模型指纹检测",
     "Identify the closest reference models using three Magpie Gateway challenges": "通过三条 Magpie Gateway 数字挑战查找最相似的参考模型",
-    "None": "无",
     "Prompt": "提示词",
     "Request hook": "请求 Hook",
     "Gateway request hook": "网关请求 Hook",
@@ -3892,9 +3892,9 @@ const I18N = {
     "Audio": "音频",
   },
   "zh-TW": {
+    "None": "無",
     "Model fingerprint": "模型指紋檢測",
     "Identify the closest reference models using three Magpie Gateway challenges": "透過三條 Magpie Gateway 數字挑戰尋找最相似的參考模型",
-    "None": "無",
     "Prompt": "提示詞",
     "Request hook": "請求 Hook",
     "Gateway request hook": "閘道請求 Hook",
@@ -7765,9 +7765,9 @@ const I18N = {
     "Audio": "音訊",
   },
   ja: {
+    "None": "なし",
     "Model fingerprint": "モデル指紋検出",
     "Identify the closest reference models using three Magpie Gateway challenges": "Magpie Gateway の3つの数値チャレンジで最も近い参照モデルを探します",
-    "None": "なし",
     "Prompt": "プロンプト",
     "Request hook": "リクエストフック",
     "Gateway request hook": "ゲートウェイリクエストフック",
@@ -11640,9 +11640,9 @@ const I18N = {
     "Audio": "音声",
   },
   de: {
+    "None": "Keine",
     "Model fingerprint": "Modell-Fingerabdruck",
     "Identify the closest reference models using three Magpie Gateway challenges": "Mit drei Magpie-Gateway-Zahlenaufgaben die ähnlichsten Referenzmodelle finden",
-    "None": "Keine",
     "Prompt": "Prompt",
     "Request hook": "Anfrage-Hook",
     "Gateway request hook": "Gateway-Anfrage-Hook",
