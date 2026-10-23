@@ -2,6 +2,7 @@
 // are translated in core i18n.js, as with every built-in plugin.
 magpie.strings({
   zh: {
+    "Detect model fingerprint": "检测模型指纹",
     "Compare three numeric challenges with lm-detector reference models.": "使用三条数字挑战，与 lm-detector 参考模型进行比较。",
     "Gateway model": "网关模型",
     "Choose a model": "选择模型",
@@ -19,6 +20,7 @@ magpie.strings({
     "preparing": "准备中", "running": "检测中", "done": "已完成", "failed": "失败", "cancelled": "已取消"
   },
   "zh-TW": {
+    "Detect model fingerprint": "檢測模型指紋",
     "Compare three numeric challenges with lm-detector reference models.": "使用三條數字挑戰比對 lm-detector 參考模型。",
     "Gateway model": "閘道模型", "Choose a model": "選擇模型", "Run fingerprint": "執行指紋檢測",
     "Runs against one exact provider/model. Probe requests consume tokens.": "僅檢測指定的 provider/model；探針請求會消耗 Token。",
@@ -30,6 +32,7 @@ magpie.strings({
     "preparing": "準備中", "running": "檢測中", "done": "已完成", "failed": "失敗", "cancelled": "已取消"
   },
   ja: {
+    "Detect model fingerprint": "モデル指紋を検出",
     "Compare three numeric challenges with lm-detector reference models.": "3つの数値チャレンジを lm-detector の参照モデルと比較します。",
     "Gateway model": "ゲートウェイモデル", "Choose a model": "モデルを選択", "Run fingerprint": "指紋検出を実行",
     "Runs against one exact provider/model. Probe requests consume tokens.": "指定した provider/model のみを検査します。リクエストにはトークン料金がかかります。",
@@ -41,6 +44,7 @@ magpie.strings({
     "preparing": "準備中", "running": "実行中", "done": "完了", "failed": "失敗", "cancelled": "キャンセル済み"
   },
   de: {
+    "Detect model fingerprint": "Modell-Fingerabdruck prüfen",
     "Compare three numeric challenges with lm-detector reference models.": "Drei Zahlenaufgaben mit den Referenzmodellen von lm-detector vergleichen.",
     "Gateway model": "Gateway-Modell", "Choose a model": "Modell wählen", "Run fingerprint": "Fingerabdruck prüfen",
     "Runs against one exact provider/model. Probe requests consume tokens.": "Prüft genau ein provider/model. Testanfragen verbrauchen Tokens.",
