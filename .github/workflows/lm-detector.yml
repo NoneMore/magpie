@@ -28,3 +28,12 @@ jobs:
       - name: Run direct-detector core tests
         working-directory: plugins/lm-detector
         run: bun test tests/*.test.ts
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Gateway + Bun host integration (mock upstream)
+        timeout-minutes: 8
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags 'nogui lm_detector_e2e' -run '^TestLMDetectorGatewayBunIntegration
+ -count=1 -v -timeout 4m ./plugins/lm-detector
