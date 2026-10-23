@@ -31,7 +31,7 @@ import (
 
 // Pin a published lmfpd build rather than allowing 'latest' to silently
 // change the candidate bank, calibration or prompt generator.
-const EngineVersion = "0.0.1790172702647"
+const EngineVersion = "0.0.1792416845676"
 const maxJobs = 40
 const maxActive = 2
 const maxOutput = 8 << 20
