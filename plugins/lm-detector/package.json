@@ -1,0 +1,34 @@
+{
+  "name": "magpie-lm-detector",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "description": "Bundled native LM Detector Page plugin for Magpie",
+  "dependencies": {
+    "lmfpd": "latest"
+  },
+  "magpie": {
+    "page": {
+      "title": "Model Fingerprint",
+      "titles": {
+        "zh": "模型指纹检测"
+      },
+      "file": "page/index.html"
+    },
+    "actions": [
+      {
+        "id": "detect",
+        "menu": "provider",
+        "title": "Detect model fingerprint",
+        "titles": {
+          "zh": "检测模型指纹"
+        }
+      }
+    ],
+    "permissions": [
+      "providers:list",
+      "tool:run"
+    ]
+  }
+}

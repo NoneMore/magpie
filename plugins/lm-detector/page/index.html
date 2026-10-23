@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模型指纹检测</title>
+<link rel="stylesheet" href="style.css">
+<script src="_magpie/bridge.js"></script>
+<script defer src="app.js"></script>
+</head>
+<body>
+<header><div><h1>模型指纹检测</h1><p class="muted">通过 Magpie Gateway 直接采样，在插件后台运行 LM Detector 算法。</p></div><span class="pill">LM Detector</span></header>
+<section class="panel">
+<label for="provider">Provider</label><select id="provider"><option>加载中…</option></select>
+<label for="model">模型</label><select id="model"><option>加载中…</option></select>
+<label for="format">API 协议</label>
+<select id="format"><option value="responses">OpenAI Responses</option><option value="chat">Chat Completions</option></select>
+<div class="buttons"><button class="primary" id="run" disabled>开始检测</button><button id="cancel" hidden>取消检测</button><button id="reload">刷新模型</button></div>
+<div class="status" role="status" aria-live="polite"><i id="dot"></i><span id="message">正在连接…</span><span id="elapsed"></span></div>
+</section>
+<section class="panel" id="resultSection" hidden>
+<div class="headrow"><h2>检测结果</h2><small id="sampleCount"></small></div>
+<div class="winner"><small>最相似候选</small><strong id="winner">—</strong><div id="winnerNote" class="muted"></div></div>
+<div class="table"><table><thead><tr><th>候选模型</th><th>闭集概率</th><th>相对分数</th></tr></thead><tbody id="results"></tbody></table></div>
+<details><summary>诊断信息</summary><pre id="diagnostics"></pre></details>
+</section>
+<p class="muted note">检测向所选模型发送 3 条长整数挑战，可能产生费用。置信度仅是参考库内的闭集相对概率，不能证明实际模型身份。动态路由或 fallback 会影响可靠性。</p>
+</body>
+</html>
