@@ -1,0 +1,25 @@
+// Build-time-only fetch. Release EXEs embed the two assets: end users do
+// not need Node, npm, or a network connection to run the bundled plugin.
+import { execFileSync } from "node:child_process";
+import { readFile, copyFile, mkdir, stat } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const plugin = path.join(root, "plugins", "lm-detector");
+const version = "0.0.1792416845676";
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+execFileSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund",
+  "--no-save", "--no-package-lock", "lmfpd@" + version], {cwd: plugin, stdio: "inherit"});
+const source = path.join(plugin, "node_modules", "lmfpd");
+const manifest = JSON.parse(await readFile(path.join(source, "package.json"), "utf8"));
+if (manifest.version !== version) throw Error("Unexpected lmfpd version: " + manifest.version);
+const dest = path.join(plugin, "data");
+await mkdir(dest, {recursive: true});
+for (const name of ["unified_bank.json", "shared_detector.bin"]) {
+  const from = path.join(source, "data", name);
+  const size = (await stat(from)).size;
+  if (size < 1024 * 1024) throw Error("lmfpd reference asset is unexpectedly small: " + name);
+  await copyFile(from, path.join(dest, name));
+  console.log("Bundled " + name + " (" + size + " bytes) from lmfpd@" + version);
+}

@@ -252,6 +252,8 @@ func run(args []string) error {
 	if _, err := pluginrt.Refresh(); err != nil {
 		fmt.Fprintf(os.Stderr, "magpie: plugins.yml: %v\n", err)
 	}
+	// Fork-only: make the bundled Page+tool plugin available without npm or manual add.
+	installBundledLMDetector()
 	// the providers and settings read once for every agent's fields, which
 	// the moves below look at (a write among them reads them again)
 	release := provider.Hold()
