@@ -245,9 +245,9 @@ additional developer message; blank or absent instructions still use the native
 prompt. Other input items and request adaptations are unchanged.
 
 The caller-owned policy namespaces explicit and derived `prompt_cache_key`
-values; Codex's signed session headers use that key. Requests without a cache
-key keep any client-supplied session headers as-is. Do not change the setting
-mid-conversation. The opt-in affects no other provider or native Codex passthrough.
+values; Codex's signed session headers use that key. Keyless requests with caller instructions partition
+existing session and thread headers independently; missing headers are not
+created. Do not change the setting mid-conversation. The opt-in affects no other provider or native Codex passthrough.
 This personal-fork experiment is unsupported upstream and may risk the account;
 live subscription acceptance has not been verified.
 

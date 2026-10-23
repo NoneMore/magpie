@@ -233,6 +233,58 @@ func TestCodexBodyCallerPromptOptIn(t *testing.T) {
 	}
 }
 
+// A caller whose input has no user message cannot derive a body cache key.
+// Its supplied session headers must still be partitioned on the opt-in path.
+func TestCodexCallerPromptSessionHeadersWithoutKey(t *testing.T) {
+	signIn(t)
+	p, ok := find(All(), "codex")
+	if !ok {
+		t.Fatal("no built-in Codex account")
+	}
+	s := settings.Load()
+	s.CodexCallerPrompt = true
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"model":"gpt-5.5","instructions":"You are Pi.","input":[{"type":"compaction_trigger"}]}`)
+	sign := func(original []byte, withHeaders bool) (string, string, []byte) {
+		t.Helper()
+		prepared := p.Prepare(original)
+		req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+		if withHeaders {
+			req.Header.Set("session-id", "thread-1")
+			req.Header.Set("thread-id", "child-1")
+		}
+		if err := p.Sign(context.Background(), req, Responses, prepared); err != nil {
+			t.Fatal(err)
+		}
+		return req.Header.Get("session-id"), req.Header.Get("thread-id"), prepared
+	}
+	session, thread, prepared := sign(body, true)
+	if session != callerCacheKey("thread-1") || thread != callerCacheKey("child-1") ||
+		strings.Contains(string(prepared), "prompt_cache_key") {
+		t.Fatalf("keyless caller policy: session %q thread %q body %s", session, thread, prepared)
+	}
+	if s, th, _ := sign(body, true); s != session || th != thread {
+		t.Fatalf("caller sessions not stable: %q %q", s, th)
+	}
+	if s, th, _ := sign(body, false); s != "" || th != "" {
+		t.Fatalf("invented session headers: %q %q", s, th)
+	}
+	// When no caller instructions were supplied, native instructions and
+	// existing session headers are both retained in the opt-in mode.
+	if s, th, _ := sign([]byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`), true); s != "thread-1" || th != "child-1" {
+		t.Fatalf("empty caller changed native session: %q %q", s, th)
+	}
+	s.CodexCallerPrompt = false
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if s, th, _ := sign(body, true); s != "thread-1" || th != "child-1" {
+		t.Fatalf("default changed native session: %q %q", s, th)
+	}
+}
+
 // A conversation whose client names none gets a key of its own, the same on
 // every turn; a client's own key stays.
 func TestCodexPromptCacheKey(t *testing.T) {

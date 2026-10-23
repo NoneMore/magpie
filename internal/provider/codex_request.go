@@ -51,6 +51,9 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		}
 		req.Header.Set("Accept", "text/event-stream")
 		sessionHeaders(req.Header, body)
+		if settings.Shared().CodexCallerPrompt {
+			callerSessionHeaders(req.Header, body)
+		}
 		return nil
 	}
 }
@@ -87,6 +90,31 @@ func callerCacheKey(key string) string {
 	hash := sha256.Sum256([]byte("codex-caller-prompt\x00" + key))
 	id := hex.EncodeToString(hash[:])
 	return id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
+}
+
+// callerSessionHeaders partitions a caller-owned, keyless request's existing
+// session identity. Without a cache key, codexBody cannot use the session
+// headers because it only receives the body. This runs after sessionHeaders
+// and never fabricates a session for requests with no session headers.
+func callerSessionHeaders(h http.Header, body []byte) {
+	var v struct {
+		Key          string `json:"prompt_cache_key"`
+		Instructions string `json:"instructions"`
+		Model        string `json:"model"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.Key != "" || strings.TrimSpace(v.Instructions) == "" ||
+		v.Instructions == codexInstructions(v.Model) {
+		// An empty original caller prompt was already replaced by the
+		// native one, and must retain the native session identity.
+		return
+	}
+	// Preserve distinct session and thread identities for callers that
+	// supplied both; unlike body keys, their two headers need not agree.
+	for _, name := range []string{"session-id", "thread-id"} {
+		if key := h.Get(name); key != "" {
+			h.Set(name, callerCacheKey(key))
+		}
+	}
 }
 
 // codexUserAgent is the User-Agent Codex CLI of version v sends:
