@@ -73,6 +73,7 @@ func bundledPackage(e Entry, name string) bool {
 }
 
 func markBundled(marker string) error {
+    if _, err := os.Stat(marker); err == nil { return nil } else if !errors.Is(err, os.ErrNotExist) { return err }
     if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil { return err }
     // The marker belongs to the user config, not the versioned bundle. It
     // survives app upgrades and explicit removal from the plugin list.
