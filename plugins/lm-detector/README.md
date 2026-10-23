@@ -12,7 +12,7 @@ magpie plugin add "$(pwd)"
 
 The npm dependency `lmfpd` supplies **only** `data/unified_bank.json` and `data/shared_detector.bin`; the challenge generator, features, positional classifier, detector decoding and scoring are vendored directly from `Ikaleio/lm-detector/shared` and executed in the plugin host. No CLI imports or subprocesses are used.
 
-The fork already includes Page tool bridge. Grant the plugin `providers:list` and `tool:run` permissions. Open **Model Fingerprint** from the sidebar or click **Detect model fingerprint** on a Provider row. Select `OpenAI Responses` or `Chat Completions` according to Gateway/model compatibility. The Page enables SSE streaming by default, with a checkbox to switch back to non-streaming JSON. The backend `start` tool accepts an optional `stream: boolean` argument (default `false` for compatibility). The model is requested explicitly from the Gateway; avoid routing groups/fallbacks, since they mix underlying models.
+The fork already includes Page tool bridge. Grant the plugin `providers:list` and `tool:run` permissions. Open **Model Fingerprint** from the sidebar or click **Detect model fingerprint** on a Provider row. Select `OpenAI Responses` or `Chat Completions` according to Gateway/model compatibility. The Page enables SSE streaming by default, with a checkbox to switch back to non-streaming JSON. The backend `start` tool accepts an optional `stream: boolean` argument (default `false` for compatibility). The Page also exposes CLI-equivalent `effort`, `timeout`, `count`, `parallel`, `repeat`, and `strict` options. The model is requested explicitly from the Gateway; avoid routing groups/fallbacks, since they mix underlying models.
 
 The Gateway defaults to `http://127.0.0.1:3425/v1` and its local development token `magpie`. To override when launching Magpie:
 
@@ -23,10 +23,25 @@ export MAGPIE_FPD_GATEWAY_KEY='YOUR_GATEWAY_KEY'
 
 Non-loopback gateways require HTTPS and an explicit key. No upstream provider key is sent into the Page iframe. The Page remains network-isolated.
 
+## UI detection options
+
+These settings follow the [LM Detector CLI detect options](https://lm.ikale.io/docs/cli/detect/) without executing the CLI. They are passed through the Page's `magpie.tool.run("start", ...)` call and validated again in the Bun backend.
+
+| UI option | Backend field | Default | Behavior |
+| --- | --- | --- | --- |
+| `-e, --effort` | `effort` | omitted | Optional provider-specific reasoning effort, passed as `reasoning.effort` (Responses) or `reasoning_effort` (Chat). |
+| `--timeout` | `timeout` | 120 seconds | 0.1–600 seconds. SSE times out until the first nonempty body chunk; JSON times out until the complete body has arrived. |
+| `--count` | `count` | 3 | 1–3 independent challenges per round. One or two samples yield uncalibrated rankings when model-like. |
+| `-p, --parallel` | `parallel` | 3 | 1–3 simultaneous requests per round, capped at `count`; does not change total requests. |
+| `-n, --repeat` | `repeat` | 1 | Sequential independent rounds (1–20 in this plugin to bound token cost). Each round is scored separately. |
+| `-s, --strict` | `strict` | false | Requires `count=3`, disables SSE integer-count capping and JSON trimming, and scores only if all three naturally complete with valid answers. |
+
+The plugin runs at most two *jobs* at once; each job can make at most `count × repeat` paid requests. The results panel lets you inspect each completed round and its independent ranking. No extra Gateway credentials are exposed to the Page.
+
 ## Design and limitations
 
-- One run makes three independent challenges (292–332 integers each), sends up to three requests concurrently and calls the real upstream `analyzeSharedOutputs` scorer, with partial-sample support. Routing groups are excluded because they can sample different models; configure model fallbacks carefully.
-- The adapter supports both non-streaming JSON and SSE for Responses / Chat Completions. SSE consumes incremental events, rejects abnormal completion, and stops once it has enough complete integers, matching upstream relaxed-mode capping.
+- Each round makes 1–3 independent challenges (292–332 integers each), sends up to three requests concurrently and calls the real upstream `analyzeSharedOutputs` scorer, with partial-sample support when strict mode is off. Routing groups are excluded because they can sample different models; configure model fallbacks carefully.
+- The adapter supports both non-streaming JSON and SSE for Responses / Chat Completions. In relaxed mode, SSE consumes incremental events and caps once it has enough complete integers; strict mode waits for normal completion. SSE timeout covers the first body chunk only; JSON timeout covers the complete response.
 - The reference bank + detector are loaded together and checked for matching metadata; a mismatch fails safely. The npm `lmfpd` reference-data package is pinned to `0.0.1792416845676`, which passed the shared detector compatibility tests; a lockfile is still recommended for fully reproducible transitive dependencies.
 - A run can be cancelled. Jobs and final reports are in-memory only and are lost when the plugin host restarts. At most two run concurrently.
 - Tokenizer probing is not implemented. The SSE adapter stops at the required integer count rather than waiting for a post-cap usage report; fingerprint scoring does not use token usage.
