@@ -1,0 +1,30 @@
+/* Built-in model fingerprint page: use Magpie's neutral page palette. */
+#view-fingerprint { gap: 16px; max-width: 1120px; }
+.fp-head { display: flex; gap: 14px; justify-content: space-between; align-items: start; }
+.fp-head h2 { margin: 0 0 5px; font-size: 18px; }
+.fp-head p { margin: 0; }
+.fp-card { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 16px; display: grid; gap: 11px; }
+.fp-card label, .fp-subtitle { font-weight: 600; font-size: 13px; }
+.fp-select { display: flex; gap: 8px; align-items: center; }
+.fp-select select { min-width: 0; flex: 1; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 8px; padding: 8px; }
+.fp-select button { flex: none; }
+.fp-muted { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.fp-error { color: var(--red, #cf3939); font-size: 12px; overflow-wrap: anywhere; }
+.fp-error[hidden] { display: none; }
+.fp-jobs { display: grid; gap: 12px; }
+.fp-job { border: 1px solid var(--line); border-radius: 10px; padding: 13px; display: grid; gap: 8px; }
+.fp-job-head { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; min-width: 0; }
+.fp-job-head strong { overflow-wrap: anywhere; }
+.fp-job-state { color: var(--muted); font-size: 12px; }
+.fp-pred { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.fp-pred strong { font-size: 16px; }
+.fp-pct { font-variant-numeric: tabular-nums; margin-left: auto; }
+.fp-ranking { padding-left: 22px; margin: 0; display: grid; gap: 8px; }
+.fp-rank { display: flex; gap: 14px; border-top: 1px solid var(--line); padding-top: 7px; font-size: 12px; }
+.fp-name { flex: 1; overflow-wrap: anywhere; }
+.fp-caveat { max-width: 700px; }
+@media (max-width: 600px) {
+  .fp-select { flex-wrap: wrap; }
+  .fp-select select { flex-basis: 100%; }
+  .fp-select button { width: 100%; }
+}
