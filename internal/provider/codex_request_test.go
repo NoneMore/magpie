@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // The conversation goes in the session headers Codex CLI 0.162 sends,
@@ -148,6 +149,165 @@ func TestCodexBodyAsCodexSendsIt(t *testing.T) {
 	json.Unmarshal(out, &m)
 	if m.Instructions != "You are Codex, a coding agent.\nPersonality." || len(m.Input) != 0 {
 		t.Fatalf("%s", out)
+	}
+}
+
+// Caller-owned instructions are a personal-fork opt-in for the built-in
+// Codex account. The default, independent messages and Codex's other
+// request adaptations stay as they were.
+func TestCodexBodyCallerPromptOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "models_cache.json"),
+		[]byte(`{"models":[{"slug":"gpt-5.5","model_messages":{"instructions_template":"Native Codex"}}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type sent struct {
+		Instructions string           `json:"instructions"`
+		Key          string           `json:"prompt_cache_key"`
+		Input        []map[string]any `json:"input"`
+		Tools        []map[string]any `json:"tools"`
+		Stream       bool             `json:"stream"`
+		Store        bool             `json:"store"`
+	}
+	decode := func(body string) sent {
+		t.Helper()
+		var got sent
+		if err := json.Unmarshal(codexBody([]byte(body)), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	const request = `{"model":"gpt-5.5","instructions":"You are Pi.","prompt_cache_key":"thread-1","stream":false,"store":true,"tools":[{"type":"function","name":"echo","parameters":{"type":"object"}}],"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"Independent"}]},{"type":"message","role":"user","content":"hello"}]}`
+	native := decode(request)
+	if native.Instructions != "Native Codex" || native.Key != "thread-1" || len(native.Input) != 3 {
+		t.Fatalf("default prompt changed: %+v", native)
+	}
+
+	s := settings.Load()
+	s.CodexCallerPrompt = true
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	caller := decode(request)
+	if caller.Instructions != "You are Pi." || len(caller.Input) != 2 ||
+		caller.Input[0]["role"] != "developer" ||
+		caller.Input[0]["content"].([]any)[0].(map[string]any)["text"] != "Independent" ||
+		len(caller.Tools) != 1 || caller.Tools[0]["name"] != "echo" ||
+		!caller.Stream || caller.Store {
+		t.Fatalf("caller policy lost original content or Codex adaptations: %+v", caller)
+	}
+	if caller.Key == "" || caller.Key == native.Key || len(caller.Key) != 36 || decode(request).Key != caller.Key {
+		t.Fatalf("caller key should be deterministic and isolated: %q vs %q", caller.Key, native.Key)
+	}
+
+	// Empty and absent caller instructions keep the native prompt, without
+	// removing independent developer items or changing a caller's key.
+	for _, field := range []string{"", `,"instructions":""`, `,"instructions":"  "`} {
+		got := decode(`{"model":"gpt-5.5"` + field + `,"prompt_cache_key":"thread-1","input":[{"type":"message","role":"developer","content":"Independent"}]}`)
+		if got.Instructions != "Native Codex" || got.Key != "thread-1" ||
+			len(got.Input) != 1 || got.Input[0]["role"] != "developer" {
+			t.Fatalf("empty caller %q changed native fallback: %+v", field, got)
+		}
+	}
+
+	// Generated cache keys are partitioned too, but remain stable for the
+	// same conversation within the caller policy.
+	const automatic = `{"model":"gpt-5.5","instructions":"You are Pi.","input":[{"type":"message","role":"user","content":"hello"}]}`
+	callerAuto := decode(automatic).Key
+	if callerAuto == "" || callerAuto != decode(automatic).Key {
+		t.Fatalf("unstable caller cache key: %q", callerAuto)
+	}
+	s.CodexCallerPrompt = false
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if key := decode(automatic).Key; key == "" || key == callerAuto {
+		t.Fatalf("generated native and caller keys collided: %q", key)
+	}
+}
+
+// A caller whose input has no user message cannot derive a body cache key.
+// Its supplied session headers must still be partitioned on the opt-in path.
+func TestCodexCallerPromptSessionHeadersWithoutKey(t *testing.T) {
+	signIn(t)
+	p, ok := find(All(), "codex")
+	if !ok {
+		t.Fatal("no built-in Codex account")
+	}
+	s := settings.Load()
+	s.CodexCallerPrompt = true
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"model":"gpt-5.5","instructions":"You are Pi.","input":[{"type":"compaction_trigger"}]}`)
+	sign := func(original []byte, withHeaders bool) (string, string, []byte) {
+		t.Helper()
+		prepared := p.Prepare(original)
+		req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+		if withHeaders {
+			req.Header.Set("session-id", "thread-1")
+			req.Header.Set("thread-id", "child-1")
+		}
+		if err := p.Sign(context.Background(), req, Responses, prepared); err != nil {
+			t.Fatal(err)
+		}
+		if withHeaders {
+			// Re-signing the same keyless request must not double-namespace its headers.
+			if err := p.Sign(context.Background(), req, Responses, prepared); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return req.Header.Get("session-id"), req.Header.Get("thread-id"), prepared
+	}
+	session, thread, prepared := sign(body, true)
+	if session != callerCacheKey("thread-1") || thread != callerCacheKey("child-1") ||
+		strings.Contains(string(prepared), "prompt_cache_key") {
+		t.Fatalf("keyless caller policy: session %q thread %q body %s", session, thread, prepared)
+	}
+	if s, th, _ := sign(body, true); s != session || th != thread {
+		t.Fatalf("caller sessions not stable: %q %q", s, th)
+	}
+	if s, th, _ := sign(body, false); s != "" || th != "" {
+		t.Fatalf("invented session headers: %q %q", s, th)
+	}
+	// When no caller instructions were supplied, native instructions and
+	// existing session headers are both retained in the opt-in mode.
+	if s, th, _ := sign([]byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`), true); s != "thread-1" || th != "child-1" {
+		t.Fatalf("empty caller changed native session: %q %q", s, th)
+	}
+	// Native Codex passthrough bypasses codexBody; the experimental policy
+	// must not rewrite caller-supplied session headers along that path.
+	t.Run("native passthrough", func(t *testing.T) {
+		ctx := WithNativeCodexPassthrough(context.Background())
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Responses+"/responses", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("session-id", "native-session")
+		req.Header.Set("thread-id", "native-thread")
+		if err := p.Sign(ctx, req, Responses, body); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("session-id"); got != "native-session" {
+			t.Errorf("native session-id changed: %q", got)
+		}
+		if got := req.Header.Get("thread-id"); got != "native-thread" {
+			t.Errorf("native thread-id changed: %q", got)
+		}
+	})
+	s.CodexCallerPrompt = false
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if s, th, _ := sign(body, true); s != "thread-1" || th != "child-1" {
+		t.Fatalf("default changed native session: %q %q", s, th)
 	}
 }
 

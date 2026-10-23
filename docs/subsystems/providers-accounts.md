@@ -235,6 +235,22 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
 - A usage cap is kept per account (`AccountCaps`, 1–99) and, beside it, per window (`AccountWindowCaps`, by the account and the window's `capId`, its name in lower case: `WindowCapID`). A window's own share wins over the account's; 100 is no cap on that window. `CapsOf` gives both (`WindowCaps`), `CapHeld` and `capReached` judge each window by its own, and `SetWindowCap` (GUI `provider/windowcap`, `magpie provider account-cap <id> <account> --window <name>`) sets one. A config without window caps reads as before.
 - A window whose reset time has passed has started again, whatever share it was read at (`resetPassed`). That holds for a reading kept from before (`AsOf`) and for a fresh one: Claude Code's `/usage` gives a reset to the minute and can lag it, so a run just after a reset can still say 100% with that reset. `claudeWindows` hands such a window back empty on every path, and `usedPast`, `usedUp`, `BackAt` and `capReached` leave it out when they judge an account spent, for Codex, Claude Code and `magpie quota wait` alike. A card can still show a kept reading as it was read (`reported`, for a Claude card while `/usage` is unavailable); that changes what it shows, never which account is used. A reset `/usage` gives as a time alone ("resets 3pm") can be read as its next one, a day on (`claudeResetTime`), and is then not seen as passed here.
 
+### Personal fork: Codex caller-owned instructions
+
+The built-in ChatGPT/Codex subscription adapter offers **Caller-owned Codex
+instructions (experimental)** in the Codex agent's settings. The UI persists
+`codexCallerPrompt` in `settings.json`, defaulting to Off. When On, non-blank
+caller `instructions` replace Codex's native prompt rather than becoming an
+additional developer message; blank or absent instructions still use the native
+prompt. Other input items and request adaptations are unchanged.
+
+The caller-owned policy namespaces explicit and derived `prompt_cache_key`
+values; Codex's signed session headers use that key. Keyless requests with caller instructions partition
+existing session and thread headers independently; missing headers are not
+created. Do not change the setting mid-conversation. The opt-in affects no other provider or native Codex passthrough.
+This personal-fork experiment is unsupported upstream and may risk the account;
+live subscription acceptance has not been verified.
+
 ## Verification
 
 ```sh

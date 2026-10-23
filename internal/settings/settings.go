@@ -466,6 +466,8 @@ type Settings struct {
 	// (internal/agent/codex.go, and the Settings row) and leaves it to the
 	// user to turn off. A thread keeps the version it started with.
 	CodexAgentsV1 bool `json:"codexAgentsV1,omitempty"`
+	// Personal-fork opt-in: use caller instructions on the built-in Codex account.
+	CodexCallerPrompt bool `json:"codexCallerPrompt,omitempty"`
 	// CodexTitles is where the requests Codex makes for a thread's title
 	// (thread_title, thread_title_reconsideration: a hidden turn of their
 	// own, on Codex's own model through its ChatGPT sign-in) go (#705): ""
@@ -1297,6 +1299,19 @@ func SavedAddr() string {
 func Save(s Settings) error {
 	fileMu.Lock()
 	defer fileMu.Unlock()
+	return save(s, false)
+}
+
+// SetCodexCallerPrompt changes this preference without overwriting other
+// settings, even if an older Settings page is currently open.
+func SetCodexCallerPrompt(on bool) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.CodexCallerPrompt = on
 	return save(s, false)
 }
 
