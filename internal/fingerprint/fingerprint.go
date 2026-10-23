@@ -284,6 +284,20 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 	return l.Buffer.Write(p)
 }
 
+// bundledEngine locates the pinned npm package shipped with a Magpie
+// installer or CI ZIP. The main executable stays outside node_modules.
+func bundledEngine() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	file := filepath.Join(filepath.Dir(exe), "fingerprint-engine", "node_modules", "lmfpd", "bin", "fpd.js")
+	if info, err := os.Stat(file); err == nil && !info.IsDir() {
+		return file
+	}
+	return ""
+}
+
 func execute(ctx context.Context, id string) {
 	manager.Lock()
 	var model string
@@ -331,13 +345,18 @@ func execute(ctx context.Context, id string) {
 	if ctx.Err() != nil {
 		return
 	}
-	// bunx downloads the pinned published engine into Bun's cache on first
-	// use. The engine includes the reference bank and trained detector.
-	// Never put the Gateway key on the process command line or in results.
-	cmd := exec.CommandContext(ctx, bun, "x", "--bun", "lmfpd@"+EngineVersion,
-		"--model", model, "--baseurl", base, "--api", "responses",
+	// Prefer the engine packaged beside Magpie by the Windows release CI.
+	// This keeps the large, calibrated reference bank available offline.
+	// A developer build without the packaged engine falls back to Bun's
+	// pinned package cache. Never put the Gateway key in argv or results.
+	args := []string{"x", "--bun", "lmfpd@" + EngineVersion}
+	if local := bundledEngine(); local != "" {
+		args = []string{local}
+	}
+	args = append(args, "--model", model, "--baseurl", base, "--api", "responses",
 		"--count", "3", "--parallel", "3", "--strict", "--no-stream",
 		"--json", "--no-update-check", "--timeout", "180")
+	cmd := exec.CommandContext(ctx, bun, args...)
 	cmd.Env = append(os.Environ(), "API_KEY="+key, "FPD_NO_UPDATE_CHECK=1")
 	var out limitedBuffer
 	var stderr limitedBuffer
