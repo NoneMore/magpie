@@ -32,7 +32,7 @@ jobs:
       - name: Gofmt
         shell: bash
         run: |
-          bad=$(gofmt -l $(git ls-files '*.go'))
+          bad=$(git ls-files -z '*.go' | xargs -0 -n 20 gofmt -l)
           if [ -n "$bad" ]; then echo "not gofmt'd:"; echo "$bad"; exit 1; fi
       - name: Vet gateway and plugin
         run: go vet -tags nogui ./internal/gateway ./internal/plugin
