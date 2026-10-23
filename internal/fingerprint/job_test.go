@@ -1,14 +1,14 @@
 package fingerprint
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
-	"net/http"
-	"net/http/httptest"
 )
 
 // The published classifier is exercised by the CI smoke test. This local
