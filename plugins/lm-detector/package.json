@@ -6,7 +6,7 @@
   "main": "./index.js",
   "description": "Bundled native LM Detector Page plugin for Magpie",
   "dependencies": {
-    "lmfpd": "0.0.1790172702647"
+    "lmfpd": "latest"
   },
   "magpie": {
     "page": {

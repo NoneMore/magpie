@@ -22,6 +22,9 @@ jobs:
       - name: Install reference data package
         working-directory: plugins/lm-detector
         run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Show installed reference-data version
+        working-directory: plugins/lm-detector
+        run: npm ls lmfpd --depth=0
       - name: Run direct-detector core tests
         working-directory: plugins/lm-detector
         run: bun test tests/*.test.ts
