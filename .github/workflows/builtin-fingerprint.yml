@@ -68,6 +68,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Bundle pinned lmfpd classifier and calibrated reference data
+        timeout-minutes: 8
+        run: |
+          mkdir -p dist/fingerprint-engine
+          npm install --prefix dist/fingerprint-engine --no-audit --no-fund --ignore-scripts --omit=dev lmfpd@0.0.1790172702647
+          node -e "const p=require('./dist/fingerprint-engine/node_modules/lmfpd/package.json');if(p.version!=='0.0.1790172702647')process.exit(1)"
+          test -s dist/fingerprint-engine/node_modules/lmfpd/bin/fpd.js
+          test -s dist/fingerprint-engine/node_modules/lmfpd/data/shared_detector.bin
+          test -s dist/fingerprint-engine/node_modules/lmfpd/data/unified_bank.json
       - name: Build Windows GUI using project's release target
         env:
           CGO_ENABLED: '0'
@@ -78,5 +90,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: magpie-builtin-fingerprint-windows
-          path: dist/magpie-windows-*.exe
+          path: |
+            dist/magpie-windows-*.exe
+            dist/fingerprint-engine/**
           retention-days: 14
