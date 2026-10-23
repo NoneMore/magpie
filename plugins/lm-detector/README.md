@@ -36,7 +36,7 @@ These settings follow the [LM Detector CLI detect options](https://lm.ikale.io/d
 | `-n, --repeat` | `repeat` | 1 | Sequential independent rounds (1–20 in this plugin to bound token cost). Each round is scored separately. |
 | `-s, --strict` | `strict` | false | Requires `count=3`, disables SSE integer-count capping and JSON trimming, and scores only if all three naturally complete with valid answers. |
 
-The plugin runs at most two *jobs* at once; each job can make at most `count × repeat` paid requests. The results panel lets you inspect each completed round and its independent ranking. No extra Gateway credentials are exposed to the Page.
+The plugin runs at most two *jobs* at once; each job can make at most `count × repeat` paid requests. The Page shows a per-sample integer progress bar and aggregate request progress across rounds. Streaming samples show first-body-byte timing (diagnostics), visible-text TTFT and an approximate tokens/second decode rate when enough unbuffered text events arrive. It uses the upstream throughput meter; empty heartbeat and metadata chunks do not establish TTFT, and short or buffered streams show TPS as unavailable. JSON samples expose total wall time only (TTFT/TPS are unavailable). After completion, selecting a round shows its saved timings and sampling progress. No extra Gateway credentials are exposed to the Page.
 
 ## Design and limitations
 

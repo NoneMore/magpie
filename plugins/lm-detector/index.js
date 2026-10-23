@@ -7,6 +7,7 @@ import {readFile} from "node:fs/promises";
 import {randomUUID} from "node:crypto";
 import {generateChallenges} from "./shared/challenge-browser.js";
 import {parseNumbers} from "./shared/fingerprint-core.js";
+import {throughputMeter} from "./shared/throughput.ts";
 import {decodeDetector} from "./shared/detector-codec.ts";
 import {analyzeSharedOutputs, supportsSharedDetector} from "./shared/shared-detector.ts";
 
@@ -133,14 +134,18 @@ function pickText(payload,format) {
     .map(x=>typeof x.text==="string"?x.text:"").join("");
 }
 // Consume OpenAI-compatible SSE without buffering the complete stream.
-async function streamText(response,format,expected,out,strict,onFirstChunk) {
+async function streamText(response,format,expected,out,strict,onFirstChunk,requestStartedAt) {
   if (!response.body) throw Error("Gateway returned an empty SSE body.");
   const reader=response.body.getReader(),decoder=new TextDecoder();
-  let buffer="",text="",bytes=0,finished=false,finish="",capped=false;
+  let buffer="",text="",bytes=0,finished=false,finish="",capped=false,usage;
+  const meter=throughputMeter(requestStartedAt);
   function append(part) {
     if (typeof part!=="string" || !part || capped) return;
     text+=part;
     if (text.length>262144) throw Error("Unexpectedly large model response.");
+    // Measure visible text, not SSE heartbeats or protocol metadata.
+    meter.update(text);
+    out.throughput=meter.result(usage);
     // A trailing digit may still be part of the next streamed token.
     const numbers=parseNumbers(text.replace(/\d+$/,""));
     out.count=Math.min(numbers.length,expected);
@@ -156,6 +161,7 @@ async function streamText(response,format,expected,out,strict,onFirstChunk) {
     if (!data) return;
     if (data.trim()==="[DONE]") { if(format==="chat")finished=true; return; }
     const packet=JSON.parse(data);
+    if (packet?.usage) usage=packet.usage;
     if (packet?.error || packet?.type==="error")
       throw Error(String(packet?.error?.message||packet?.message||"Upstream SSE error."));
     if (format==="chat") {
@@ -164,10 +170,12 @@ async function streamText(response,format,expected,out,strict,onFirstChunk) {
       if (choice?.delta?.refusal || ["refusal","content_filter"].includes(choice?.finish_reason))
         throw Error("Model refused the fingerprint challenge.");
       if (choice?.finish_reason) finish=choice.finish_reason;
+      if (choice?.delta?.reasoning_content || choice?.delta?.reasoning) meter.reasoning();
       append(choice?.delta?.content);
     } else {
       if (packet?.type==="response.refusal.delta")
         throw Error("Model refused the fingerprint challenge.");
+      if (String(packet?.type||"").startsWith("response.reasoning")) meter.reasoning();
       if (packet?.type==="response.failed" || packet?.type==="response.incomplete")
         throw Error("Responses request did not complete.");
       if (packet?.type==="response.output_text.delta") append(packet.delta);
@@ -177,6 +185,7 @@ async function streamText(response,format,expected,out,strict,onFirstChunk) {
       if (packet?.type==="response.completed") {
         const response=packet.response;
         if (response?.status!=="completed") throw Error("Responses request did not complete.");
+        if (response?.usage) usage=response.usage;
         if (!capped) {
           const full=pickText(response,"responses");
           if (full) {
@@ -193,7 +202,10 @@ async function streamText(response,format,expected,out,strict,onFirstChunk) {
     while (!finished && !capped) {
       const {done,value}=await reader.read();
       if (done) break;
-      if (value.byteLength) onFirstChunk();
+      if (value.byteLength) {
+        if (out.firstByteMs===null) out.firstByteMs=Math.max(0,performance.now()-requestStartedAt);
+        onFirstChunk();
+      }
       bytes+=value.byteLength;
       if (bytes>MAX_RESPONSE_BYTES) throw Error("Gateway SSE response is too large.");
       buffer+=decoder.decode(value,{stream:true});
@@ -215,6 +227,7 @@ async function streamText(response,format,expected,out,strict,onFirstChunk) {
       throw Error("Stream ended without a successful completion.");
     return {text,capped};
   } finally {
+    out.throughput=meter.result(usage);
     await reader.cancel().catch(()=>{});
     reader.releaseLock();
   }
@@ -222,6 +235,7 @@ async function streamText(response,format,expected,out,strict,onFirstChunk) {
 async function sample(job,index,challenge) {
   const out = job.samples[index];
   out.state = "waiting";
+  out.startedAt=Date.now();
   let key = "", deadlineTimer, deadline;
   try {
     const config = gateway();
@@ -238,6 +252,7 @@ async function sample(job,index,challenge) {
     deadline = new AbortController();
     deadlineTimer = setTimeout(()=>deadline.abort(Error("Request timed out.")),job.timeout*1000);
     const signal = AbortSignal.any([job.controller.signal,deadline.signal]);
+    const requestStartedAt=performance.now();
     const response = await fetch(base + path, {
       method:"POST",headers:{"Content-Type":"application/json",
         Accept:job.stream?"text/event-stream":"application/json",Authorization:"Bearer " + key},
@@ -253,7 +268,7 @@ async function sample(job,index,challenge) {
     if (isSSE) {
       out.state="streaming";
       ({text,capped}=await streamText(response,job.format,challenge.expected_count,out,
-        job.strict,()=>{clearTimeout(deadlineTimer);deadlineTimer=null;}));
+        job.strict,()=>{clearTimeout(deadlineTimer);deadlineTimer=null;},requestStartedAt));
     } else {
       const payload=await boundedJson(response);
       if (payload?.error) throw Error("Gateway rejected the challenge.");
@@ -280,7 +295,12 @@ async function sample(job,index,challenge) {
     out.error = (job.controller.signal.aborted ? "Cancelled" :
       key ? message.replaceAll(key,"[REDACTED]") : message).slice(0,250);
     return {text:"",expected_count:challenge.expected_count};
-  } finally { clearTimeout(deadlineTimer); job.completed++; }
+  } finally {
+    clearTimeout(deadlineTimer);
+    out.finishedAt=Date.now();
+    out.durationMs=Math.max(0,out.finishedAt-out.startedAt);
+    job.completed++;
+  }
 }
 async function execute(j,bank,detector) {
   try {
@@ -289,7 +309,8 @@ async function execute(j,bank,detector) {
       const challenges=generateChallenges(j.count);
       j.samples=challenges.map((c,i)=>({
         index:i+1,state:"queued",count:0,expectedCount:c.expected_count,
-        minimumValidNumber:null,anomalousDistribution:false,error:null
+        minimumValidNumber:null,anomalousDistribution:false,
+        startedAt:null,finishedAt:null,durationMs:null,firstByteMs:null,throughput:null,error:null
       }));
       const outputs=new Array(j.count);
       let next=0;

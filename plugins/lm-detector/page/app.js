@@ -53,10 +53,54 @@
         say(models.length?"已加载 "+models.length+" 个模型":"Gateway 暂无可用模型",models.length?"ok":"error");
     }catch(e){say("读取失败："+e.message,"error");}
   }
+  function elapsed(ms) {
+    return Number.isFinite(ms) ? (Math.max(0,ms)/1000).toFixed(1)+"s" : "—";
+  }
+  function renderProgress(job,samples=job.samples||[],round=job.round) {
+    $("progressSection").hidden=false;
+    $("roundProgress").textContent="第 "+round+"/"+job.repeat+" 轮";
+    const total=job.count*job.repeat,complete=Math.min(total,job.completed);
+    const running=samples.filter(s=>["waiting","streaming"].includes(s.state));
+    const fraction=running.reduce((sum,s)=>sum+Math.min(1,(s.count||0)/(s.expectedCount||1)),0);
+    $("totalProgressLabel").textContent=complete+"/"+total+" 次请求完成";
+    $("totalProgress").value=Math.min(100,100*(complete+fraction)/total);
+    const labels={queued:"排队中",waiting:"等待响应",streaming:"接收中",
+      complete:"完成",truncated:"已截断",failed:"失败",cancelled:"已取消"};
+    $("sampleProgress").replaceChildren(...samples.map(s=>{
+      const row=document.createElement("div"),head=document.createElement("div"),
+        name=document.createElement("strong"),label=document.createElement("span"),
+        bar=document.createElement("progress"),meta=document.createElement("div"),
+        count=document.createElement("span"),speed=document.createElement("span"),
+        time=document.createElement("span");
+      row.className="sample-row";head.className="progress-head";
+      name.textContent="样本 #"+s.index;label.textContent=labels[s.state]||s.state;
+      head.append(name,label);
+      bar.max=100;bar.setAttribute("aria-label","样本 "+s.index+" 整数进度");
+      if(s.state==="waiting")bar.removeAttribute("value");
+      else bar.value=Math.min(100,100*(s.count||0)/(s.expectedCount||1));
+      meta.className="sample-metrics";
+      count.textContent=(s.count||0)+"/"+s.expectedCount+" 整数";
+      const th=s.throughput;
+      const ttft=th&&Number.isFinite(th.ttftMs)?"TTFT "+elapsed(th.ttftMs):"TTFT —";
+      const tps=th&&Number.isFinite(th.tokensPerSecond)
+        ? (th.estimated?"≈":"")+Math.round(th.tokensPerSecond)+" tok/s":"TPS —";
+      speed.textContent=job.stream?ttft+" · "+tps:"JSON · TTFT/TPS —";
+      const ms=s.durationMs??(s.startedAt?Date.now()-s.startedAt:null);
+      time.textContent="耗时 "+elapsed(ms);
+      meta.append(count,speed,time);
+      row.append(head,bar,meta);
+      if(s.error){
+        const error=document.createElement("p");
+        error.className="sample-error";error.textContent=s.error;row.append(error);
+      }
+      return row;
+    }));
+  }
   function stop(){clearTimeout(timer);clearInterval(clock);timer=null;clock=null;}
   function renderRound(index) {
     const r=resultJob?.rounds?.[index],a=r?.analysis;
     if(!r)return;
+    renderProgress(resultJob,r.samples,r.round);
     $("winner").textContent=a?.prediction_name||a?.prediction||"本轮未评分";
     $("winnerNote").textContent=a?.evidence?.reason||r.error||a?.decision||"";
     $("sampleCount").textContent="第 "+r.round+"/"+resultJob.repeat+" 轮 · 有效样本 "+
@@ -102,6 +146,7 @@
   }
   function finish(job){
     stop();jobId=null;$("cancel").hidden=true;$("elapsed").textContent="";setModels();
+    renderProgress(job);
     render(job);
     if(job.state==="done") {
       say(job.rounds.some(r=>!r.analysis || r.analysis.decision==="unscorable")
@@ -114,6 +159,7 @@
     try {
       const j=await tool("status",{jobId:id});if(jobId!==id)return;
       if(j.state!=="running"){finish(j);return;}
+      renderProgress(j);
       const reading=j.samples.filter(s=>s.state==="streaming");
       say("第 "+j.round+"/"+j.repeat+" 轮，已完成 "+j.completed+"/"+(j.count*j.repeat)+
         " 次挑战"+(reading.length?"，流式接收 "+reading.map(s=>s.count).join("/")+" 个数字":"")+"…","busy");
@@ -122,7 +168,8 @@
   }
   async function run(){
     if(jobId||!$("model").value)return;
-    $("run").disabled=true;$("resultSection").hidden=true;say("正在建立检测任务…","busy");
+    $("run").disabled=true;$("resultSection").hidden=true;
+    $("progressSection").hidden=true;say("正在建立检测任务…","busy");
     try {
       const args={model:$("model").value,format:$("format").value,stream:$("stream").checked,
         timeout:Number($("timeout").value),count:Number($("count").value),
@@ -132,6 +179,7 @@
       if(effort)args.effort=effort;
       const j=await tool("start",args);
       jobId=j.jobId;started=Date.now();$("cancel").hidden=false;setModels();
+      renderProgress(j);
       clock=setInterval(()=>$("elapsed").textContent=Math.floor((Date.now()-started)/1000)+"s",1000);
       await poll();
     }catch(e){say("无法开始："+e.message,"error");setModels();}

@@ -183,6 +183,72 @@ function chunkedSSE(frames) {
   }),{headers:{"content-type":"text/event-stream; charset=utf-8"}});
 }
 
+
+test("SSE progress distinguishes first body byte, visible TTFT and estimated TPS",async()=>{
+  const encoder=new TextEncoder();
+  fakeGateway(async()=>new Response(new ReadableStream({
+    async start(controller){
+      try {
+        controller.enqueue(encoder.encode(": keepalive\\n\\n"));
+        await Bun.sleep(70);
+        for(let i=0;i<4;i++){
+          controller.enqueue(encoder.encode(eventData({choices:[{index:0,delta:{
+            content:Array(90).fill(1).join(", ")+", "
+          }}]})));
+          await Bun.sleep(100);
+        }
+        controller.close();
+      }catch{}
+    }
+  }),{headers:{"content-type":"text/event-stream"}}));
+  try{
+    const started=await tools.start.execute({model:fixtureModel,format:"chat",stream:true,count:1});
+    const done=await settled(started.jobId);
+    expect(done.state).toBe("done");
+    const sample=done.samples[0];
+    expect(sample.state).toBe("truncated");
+    expect(sample.startedAt).toBeNumber();
+    expect(sample.finishedAt).toBeGreaterThanOrEqual(sample.startedAt);
+    expect(sample.durationMs).toBeGreaterThanOrEqual(300);
+    expect(sample.firstByteMs).toBeNumber();
+    expect(sample.throughput.ttftMs).toBeGreaterThan(sample.firstByteMs);
+    expect(sample.throughput.ttftMs).toBeGreaterThanOrEqual(50);
+    expect(sample.throughput.tokensPerSecond).toBeGreaterThan(0);
+    expect(sample.throughput.estimated).toBe(true);
+    expect(done.rounds[0].samples[0].throughput.ttftMs).toBe(sample.throughput.ttftMs);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("JSON exposes total elapsed time without pretending it has TTFT/TPS",async()=>{
+  fakeGateway(async()=>Response.json({choices:[{
+    finish_reason:"stop",message:{content:validResponse}
+  }]}));
+  try{
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",count:1});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples[0].durationMs).toBeGreaterThanOrEqual(0);
+    expect(done.samples[0].startedAt).toBeNumber();
+    expect(done.samples[0].finishedAt).toBeNumber();
+    expect(done.samples[0].firstByteMs).toBeNull();
+    expect(done.samples[0].throughput).toBeNull();
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("SSE metadata without visible text never fabricates TTFT/TPS",async()=>{
+  fakeGateway(async()=>chunkedSSE([
+    eventData({type:"response.created",response:{id:"r"}}),
+    eventData({type:"response.completed",response:{status:"completed",output:[]}})
+  ]));
+  try{
+    const job=await tools.start.execute({model:fixtureModel,stream:true,count:1});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("failed");
+    expect(done.samples[0].firstByteMs).toBeNumber();
+    expect(done.samples[0].throughput).toBeNull();
+  } finally {globalThis.fetch=originalFetch;}
+});
+
 test("streaming Chat accumulates split SSE deltas and verifies terminal finish",async()=>{
   const parts=Array(280).fill(1).join(", "),seen=[];
   fakeGateway(async(url,init)=>{

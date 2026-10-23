@@ -39,6 +39,11 @@ type detectedJob struct {
 		State                 string `json:"state"`
 		MinimumValidNumber    *int   `json:"minimumValidNumber"`
 		AnomalousDistribution bool   `json:"anomalousDistribution"`
+		StartedAt             *int64 `json:"startedAt"`
+		DurationMs            *int64 `json:"durationMs"`
+		Throughput            *struct {
+			TTFTMs float64 `json:"ttftMs"`
+		} `json:"throughput"`
 	} `json:"samples"`
 	Rounds []struct {
 		Analysis *struct {
@@ -214,6 +219,15 @@ func TestLMDetectorGatewayBunIntegration(t *testing.T) {
 				}
 				if len(job.Samples) != 1 || job.Samples[0].MinimumValidNumber == nil {
 					t.Fatalf("missing diagnostics: %+v", job.Samples)
+				}
+				if job.Samples[0].StartedAt == nil || job.Samples[0].DurationMs == nil {
+					t.Fatalf("missing request timestamps: %+v", job.Samples[0])
+				}
+				if stream && job.Samples[0].Throughput == nil {
+					t.Fatalf("streaming sample has no visible-text TTFT: %+v", job.Samples[0])
+				}
+				if !stream && job.Samples[0].Throughput != nil {
+					t.Fatalf("JSON sample must not fabricate stream throughput: %+v", job.Samples[0])
 				}
 				wantMinimum, wantWarning := 199, false
 				if stream {

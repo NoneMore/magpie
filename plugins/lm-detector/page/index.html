@@ -32,6 +32,13 @@
 <div class="buttons"><button class="primary" id="run" disabled>开始检测</button><button id="cancel" hidden>取消检测</button><button id="reload">刷新模型</button></div>
 <div class="status" role="status" aria-live="polite"><i id="dot"></i><span id="message">正在连接…</span><span id="elapsed"></span></div>
 </section>
+<section class="panel" id="progressSection" hidden>
+<div class="headrow"><h2>采样进度</h2><small id="roundProgress"></small></div>
+<div class="progress-head"><span>全部挑战</span><strong id="totalProgressLabel">0/0</strong></div>
+<progress id="totalProgress" max="100" value="0" aria-label="检测总体进度"></progress>
+<div id="sampleProgress" class="sample-progress"></div>
+<p class="muted progress-note">进度按收到的有效整数计算。TTFT 为请求发出到首段可见文本（含排队、网络和推理）；≈ tok/s 为估算的输出速率。JSON 模式只提供总耗时；短流或缓冲流的 TPS 可能不可用。</p>
+</section>
 <section class="panel" id="resultSection" hidden>
 <div class="headrow"><h2>检测结果</h2><small id="sampleCount"></small></div>
 <label for="roundResult">查看轮次</label><select id="roundResult"></select>
