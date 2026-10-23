@@ -1,0 +1,106 @@
+name: Page Bridge CI
+
+on:
+  push:
+    branches:
+      - feat/lm-detector-page-bridge
+    paths:
+      - .github/workflows/page-bridge.yml
+      - internal/gui/pluginpage.go
+      - internal/gui/pluginpage_tool_test.go
+      - internal/gui/pagebridge.js
+      - internal/gui/assets/pluginpages.js
+      - internal/gui/assets/plugins.js
+      - internal/plugin/page.go
+      - internal/plugin/tools.go
+      - go.mod
+      - go.sum
+  pull_request:
+    paths:
+      - .github/workflows/page-bridge.yml
+      - internal/gui/pluginpage.go
+      - internal/gui/pluginpage_tool_test.go
+      - internal/gui/pagebridge.js
+      - internal/gui/assets/pluginpages.js
+      - internal/gui/assets/plugins.js
+      - internal/plugin/page.go
+      - internal/plugin/tools.go
+      - go.mod
+      - go.sum
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: page-bridge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: Go tests, JS checks, Linux CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The fork declares Go 1.26.8 in go.mod. No local Go installation
+      # is used, and this tests the committed PR code, not the default branch.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Print Go version
+        run: |
+          go version
+          go env GOTOOLCHAIN
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          bad=$(gofmt -l internal/plugin/page.go internal/gui/pluginpage.go internal/gui/pluginpage_tool_test.go)
+          if [ -n "$bad" ]; then
+            printf 'Files need gofmt:\n%s\n' "$bad"
+            exit 1
+          fi
+
+      - name: Check Page bridge JavaScript syntax
+        run: |
+          node --check internal/gui/pagebridge.js
+          node --check internal/gui/assets/pluginpages.js
+          node --check internal/gui/assets/plugins.js
+
+      # nogui builds without GTK/WebKit headers. The main Test workflow
+      # separately validates native GUI compilation on Linux/macOS/Windows.
+      - name: Vet plugin and GUI packages
+        run: go vet -tags nogui ./internal/plugin/... ./internal/gui/...
+
+      - name: Test plugin and GUI packages
+        run: go test -tags nogui -count=1 -timeout 12m ./internal/plugin/... ./internal/gui/...
+
+      - name: Build terminal-only Magpie
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -tags nogui -trimpath -o dist/magpie-linux-amd64 .
+          test -s dist/magpie-linux-amd64
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-page-bridge-linux-amd64-cli
+          path: dist/magpie-linux-amd64
+          if-no-files-found: error
+          retention-days: 7
