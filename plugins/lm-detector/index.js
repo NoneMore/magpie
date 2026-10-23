@@ -145,7 +145,7 @@ async function streamText(response,format,expected,out,strict,onFirstChunk,reque
     if (text.length>262144) throw Error("Unexpectedly large model response.");
     // Measure visible text, not SSE heartbeats or protocol metadata.
     meter.update(text);
-    out.throughput=meter.result(usage);
+    out.throughput=meter.result(usage)??null;
     // A trailing digit may still be part of the next streamed token.
     const numbers=parseNumbers(text.replace(/\d+$/,""));
     out.count=Math.min(numbers.length,expected);
@@ -227,7 +227,7 @@ async function streamText(response,format,expected,out,strict,onFirstChunk,reque
       throw Error("Stream ended without a successful completion.");
     return {text,capped};
   } finally {
-    out.throughput=meter.result(usage);
+    out.throughput=meter.result(usage)??null;
     await reader.cancel().catch(()=>{});
     reader.releaseLock();
   }
