@@ -7,7 +7,6 @@ import (
     "os"
     "path/filepath"
 
-    "github.com/yetone/magpie/internal/settings"
 )
 
 // EnsureBundled installs a fork-shipped local plugin exactly once, then follows
