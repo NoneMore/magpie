@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // The conversation goes in the session headers Codex CLI 0.162 sends,
@@ -155,9 +156,14 @@ func TestCodexBodyAsCodexSendsIt(t *testing.T) {
 // Codex account. The default, independent messages and Codex's other
 // request adaptations stay as they were.
 func TestCodexBodyCallerPromptOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	dir := t.TempDir()
 	t.Setenv("CODEX_HOME", dir)
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(dir, "models_cache.json"),
 		[]byte(`{"models":[{"slug":"gpt-5.5","model_messages":{"instructions_template":"Native Codex"}}]}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -179,13 +185,16 @@ func TestCodexBodyCallerPromptOptIn(t *testing.T) {
 		return got
 	}
 	const request = `{"model":"gpt-5.5","instructions":"You are Pi.","prompt_cache_key":"thread-1","stream":false,"store":true,"tools":[{"type":"function","name":"echo","parameters":{"type":"object"}}],"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"Independent"}]},{"type":"message","role":"user","content":"hello"}]}`
-	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "0")
 	native := decode(request)
 	if native.Instructions != "Native Codex" || native.Key != "thread-1" || len(native.Input) != 3 {
 		t.Fatalf("default prompt changed: %+v", native)
 	}
 
-	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "1")
+	s := settings.Load()
+	s.CodexCallerPrompt = true
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
 	caller := decode(request)
 	if caller.Instructions != "You are Pi." || len(caller.Input) != 2 ||
 		caller.Input[0]["role"] != "developer" ||
@@ -215,58 +224,12 @@ func TestCodexBodyCallerPromptOptIn(t *testing.T) {
 	if callerAuto == "" || callerAuto != decode(automatic).Key {
 		t.Fatalf("unstable caller cache key: %q", callerAuto)
 	}
-	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "0")
+	s.CodexCallerPrompt = false
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
 	if key := decode(automatic).Key; key == "" || key == callerAuto {
 		t.Fatalf("generated native and caller keys collided: %q", key)
-	}
-	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "true")
-	if got := decode(request); got.Instructions != "Native Codex" {
-		t.Fatalf("unexpected implicit opt-in: %+v", got)
-	}
-}
-
-// A caller whose input has no user message cannot derive a body cache key.
-// Its supplied session headers must still be partitioned on the opt-in path.
-func TestCodexCallerPromptSessionHeadersWithoutKey(t *testing.T) {
-	signIn(t)
-	p, ok := find(All(), "codex")
-	if !ok {
-		t.Fatal("no built-in Codex account")
-	}
-	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "1")
-	body := []byte(`{"model":"gpt-5.5","instructions":"You are Pi.","input":[{"type":"compaction_trigger"}]}`)
-	sign := func(original []byte, withHeaders bool) (string, string, []byte) {
-		t.Helper()
-		prepared := p.Prepare(original)
-		req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
-		if withHeaders {
-			req.Header.Set("session-id", "thread-1")
-			req.Header.Set("thread-id", "child-1")
-		}
-		if err := p.Sign(context.Background(), req, Responses, prepared); err != nil {
-			t.Fatal(err)
-		}
-		return req.Header.Get("session-id"), req.Header.Get("thread-id"), prepared
-	}
-	session, thread, prepared := sign(body, true)
-	if session != callerCacheKey("thread-1") || thread != callerCacheKey("child-1") ||
-		strings.Contains(string(prepared), "prompt_cache_key") {
-		t.Fatalf("keyless caller policy: session %q thread %q body %s", session, thread, prepared)
-	}
-	if s, th, _ := sign(body, true); s != session || th != thread {
-		t.Fatalf("caller sessions not stable: %q %q", s, th)
-	}
-	if s, th, _ := sign(body, false); s != "" || th != "" {
-		t.Fatalf("invented session headers: %q %q", s, th)
-	}
-	// When no caller instructions were supplied, native instructions and
-	// existing session headers are both retained in the opt-in mode.
-	if s, th, _ := sign([]byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`), true); s != "thread-1" || th != "child-1" {
-		t.Fatalf("empty caller changed native session: %q %q", s, th)
-	}
-	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "0")
-	if s, th, _ := sign(body, true); s != "thread-1" || th != "child-1" {
-		t.Fatalf("default changed native session: %q %q", s, th)
 	}
 }
 

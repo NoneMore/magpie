@@ -386,7 +386,7 @@ type settingsJSON struct {
 	// NoAccountsEnv is MAGPIE_NO_ACCOUNTS set, which keeps account
 	// discovery off for this run whatever Settings has (#1535)
 	NoAccountsEnv bool `json:"noAccountsEnv,omitempty"`
-	// Effective Codex caller-prompt policy; explicit UI choices win over env.
+	// Effective Codex caller-prompt setting shown by the agent's UI.
 	CodexCallerPromptOn bool `json:"codexCallerPromptOn"`
 	// whether the page is in gateway mode and why (gatewayMode); Web says
 	// it is served by magpie web, where the mode can be set
@@ -630,7 +630,7 @@ func settingsState() settingsJSON {
 	}
 	s.ProxyNow, s.ProxySource = netproxy.Describe()
 	s.NoAccountsEnv = settings.AccountDiscoveryOff() && !s.NoAccountDiscovery
-	s.CodexCallerPromptOn = settings.CodexCallerPromptOn()
+	s.CodexCallerPromptOn = s.CodexCallerPrompt
 	for _, name := range []string{"MAGPIE_OTEL_ENABLED", "MAGPIE_OTEL_ENDPOINT", "MAGPIE_OTEL_HEADERS", "MAGPIE_OTEL_METRICS", "MAGPIE_OTEL_BODIES", "MAGPIE_OTEL_BODIES_WHOLE", "MAGPIE_OTEL_SESSIONS"} {
 		if _, ok := os.LookupEnv(name); ok {
 			s.OTelEnv = true
@@ -1475,8 +1475,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
-	// Personal-fork Codex instruction policy. A saved On or Off overrides
-	// the legacy environment opt-in immediately for subsequent requests.
+	// Personal-fork Codex instruction policy, saved for subsequent requests.
 	mux.HandleFunc("POST /api/settings/codex-caller-prompt", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			On *bool `json:"on"`

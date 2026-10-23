@@ -466,11 +466,8 @@ type Settings struct {
 	// (internal/agent/codex.go, and the Settings row) and leaves it to the
 	// user to turn off. A thread keeps the version it started with.
 	CodexAgentsV1 bool `json:"codexAgentsV1,omitempty"`
-	// CodexCallerPrompt is an explicit personal-fork override for using the
-	// client's top-level instructions on the built-in ChatGPT/Codex account.
-	// Nil retains the legacy MAGPIE_CODEX_CALLER_PROMPT=1 opt-in, and a
-	// saved false wins over that environment variable.
-	CodexCallerPrompt *bool `json:"codexCallerPrompt,omitempty"`
+	// Personal-fork opt-in: use caller instructions on the built-in Codex account.
+	CodexCallerPrompt bool `json:"codexCallerPrompt,omitempty"`
 	// CodexTitles is where the requests Codex makes for a thread's title
 	// (thread_title, thread_title_reconsideration: a hidden turn of their
 	// own, on Codex's own model through its ChatGPT sign-in) go (#705): ""
@@ -1305,15 +1302,6 @@ func Save(s Settings) error {
 	return save(s, false)
 }
 
-// CodexCallerPromptOn chooses the persisted UI preference when set, falling
-// back to the original environment opt-in for existing installations.
-func CodexCallerPromptOn() bool {
-	if chosen := Shared().CodexCallerPrompt; chosen != nil {
-		return *chosen
-	}
-	return os.Getenv("MAGPIE_CODEX_CALLER_PROMPT") == "1"
-}
-
 // SetCodexCallerPrompt changes this preference without overwriting other
 // settings, even if an older Settings page is currently open.
 func SetCodexCallerPrompt(on bool) error {
@@ -1323,7 +1311,7 @@ func SetCodexCallerPrompt(on bool) error {
 	if err != nil {
 		return err
 	}
-	s.CodexCallerPrompt = &on
+	s.CodexCallerPrompt = on
 	return save(s, false)
 }
 
