@@ -88,7 +88,7 @@ async function references() {
 
 function publicJob(j) {
   return {jobId:j.id,model:j.model,format:j.format,state:j.state,
-    startedAt:j.startedAt,finishedAt:j.finishedAt || null,
+    stream:j.stream,startedAt:j.startedAt,finishedAt:j.finishedAt || null,
     completed:j.completed,samples:j.samples.map(s=>({...s})),
     error:j.error || null,analysis:j.analysis || null};
 }
@@ -126,6 +126,92 @@ function pickText(payload,format) {
     .filter(x=>x?.type==="output_text")
     .map(x=>typeof x.text==="string"?x.text:"").join("");
 }
+// Consume OpenAI-compatible SSE without buffering the complete stream.
+async function streamText(response,format,expected,out) {
+  if (!response.body) throw Error("Gateway returned an empty SSE body.");
+  const reader=response.body.getReader(),decoder=new TextDecoder();
+  let buffer="",text="",bytes=0,finished=false,finish="",capped=false;
+  function append(part) {
+    if (typeof part!=="string" || !part || capped) return;
+    text+=part;
+    if (text.length>262144) throw Error("Unexpectedly large model response.");
+    // A trailing digit may still be part of the next streamed token.
+    const numbers=parseNumbers(text.replace(/\d+$/,""));
+    out.count=Math.min(numbers.length,expected);
+    if (numbers.length>=expected) {
+      text=numbers.slice(0,expected).join(", ");
+      out.count=expected;
+      capped=true;
+    }
+  }
+  function event(frame) {
+    const data=frame.split(/\r\n|\r|\n/).filter(line=>line.startsWith("data:"))
+      .map(line=>line.slice(5).replace(/^ /,"")).join("\n");
+    if (!data) return;
+    if (data.trim()==="[DONE]") { if(format==="chat")finished=true; return; }
+    const packet=JSON.parse(data);
+    if (packet?.error || packet?.type==="error")
+      throw Error(String(packet?.error?.message||packet?.message||"Upstream SSE error."));
+    if (format==="chat") {
+      const choices=Array.isArray(packet?.choices)?packet.choices:[];
+      const choice=choices.find(x=>x?.index===0)||choices[0];
+      if (choice?.delta?.refusal || ["refusal","content_filter"].includes(choice?.finish_reason))
+        throw Error("Model refused the fingerprint challenge.");
+      if (choice?.finish_reason) finish=choice.finish_reason;
+      append(choice?.delta?.content);
+    } else {
+      if (packet?.type==="response.refusal.delta")
+        throw Error("Model refused the fingerprint challenge.");
+      if (packet?.type==="response.failed" || packet?.type==="response.incomplete")
+        throw Error("Responses request did not complete.");
+      if (packet?.type==="response.output_text.delta") append(packet.delta);
+      if (packet?.type==="response.output_text.done" && !text) append(packet.text);
+      if (packet?.type==="response.output_item.done" && !text)
+        append(pickText({status:"completed",output:[packet.item]},"responses"));
+      if (packet?.type==="response.completed") {
+        const response=packet.response;
+        if (response?.status!=="completed") throw Error("Responses request did not complete.");
+        if (!capped) {
+          const full=pickText(response,"responses");
+          if (full) {
+            text="";
+            append(full);
+          }
+        }
+        finish="completed";
+        finished=true;
+      }
+    }
+  }
+  try {
+    while (!finished && !capped) {
+      const {done,value}=await reader.read();
+      if (done) break;
+      bytes+=value.byteLength;
+      if (bytes>MAX_RESPONSE_BYTES) throw Error("Gateway SSE response is too large.");
+      buffer+=decoder.decode(value,{stream:true});
+      if (buffer.length>262144) throw Error("Gateway SSE event is too large.");
+      let match;
+      while ((match=/\r\n\r\n|\n\n|\r\r/.exec(buffer))) {
+        const frame=buffer.slice(0,match.index);
+        buffer=buffer.slice(match.index+match[0].length);
+        event(frame);
+        if (finished||capped) break;
+      }
+    }
+    if (!finished && !capped) {
+      buffer+=decoder.decode();
+      if (buffer.trim()) event(buffer);
+    }
+    if (!capped && !(finished && (format==="responses"
+      ? finish==="completed" : ["stop","end_turn","completed"].includes(finish))))
+      throw Error("Stream ended without a successful completion.");
+    return {text,capped};
+  } finally {
+    await reader.cancel().catch(()=>{});
+    reader.releaseLock();
+  }
+}
 async function sample(job,index,challenge) {
   const out = job.samples[index];
   out.state = "waiting";
@@ -135,12 +221,13 @@ async function sample(job,index,challenge) {
     const {base} = config;
     key = config.key;
     const body = job.format === "chat"
-      ? {model:job.model,messages:[{role:"user",content:challenge.prompt}],stream:false}
-      : {model:job.model,input:[{role:"user",content:challenge.prompt}],stream:false,store:false};
+      ? {model:job.model,messages:[{role:"user",content:challenge.prompt}],stream:job.stream}
+      : {model:job.model,input:[{role:"user",content:challenge.prompt}],stream:job.stream,store:false};
     const path = job.format === "chat" ? "/chat/completions" : "/responses";
     const signal = AbortSignal.any([job.controller.signal,AbortSignal.timeout(250000)]);
     const response = await fetch(base + path, {
-      method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer " + key},
+      method:"POST",headers:{"Content-Type":"application/json",
+        Accept:job.stream?"text/event-stream":"application/json",Authorization:"Bearer " + key},
       body:JSON.stringify(body),signal,redirect:"error"
     });
     if (!response.ok) {
@@ -148,16 +235,23 @@ async function sample(job,index,challenge) {
       try { const x = await boundedJson(response);reason=String(x?.error?.message||"").slice(0,220); } catch {}
       throw Error("HTTP " + response.status + (reason ? ": " + reason : ""));
     }
-    const payload = await boundedJson(response);
-    if (payload?.error) throw Error("Gateway rejected the challenge.");
-    const text = pickText(payload,job.format);
-    if (text.length > 262144) throw Error("Unexpectedly large model response.");
+    const isSSE=response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
+    let text,capped=false;
+    if (isSSE) {
+      out.state="streaming";
+      ({text,capped}=await streamText(response,job.format,challenge.expected_count,out));
+    } else {
+      const payload=await boundedJson(response);
+      if (payload?.error) throw Error("Gateway rejected the challenge.");
+      text=pickText(payload,job.format);
+      if (text.length>262144) throw Error("Unexpectedly large model response.");
+    }
     const numbers = parseNumbers(text);
     out.count = Math.min(numbers.length,challenge.expected_count);
     if (numbers.length < Math.max(80,Math.ceil(challenge.expected_count*.55)))
       throw Error("Too few valid integers (" + numbers.length + "/" + challenge.expected_count + ").");
     // Match upstream relaxed-mode scoring: ignore integers beyond the requested length.
-    out.state = numbers.length > challenge.expected_count ? "truncated" : "complete";
+    out.state = capped || numbers.length > challenge.expected_count ? "truncated" : "complete";
     const accepted = numbers.length >= challenge.expected_count
       ? numbers.slice(0,challenge.expected_count).join(", ") : text;
     return {text:accepted,expected_count:challenge.expected_count};
@@ -196,19 +290,20 @@ async function execute(j,bank,detector) {
     prune();
   }
 }
-async function start(model,format="responses") {
+async function start(model,format="responses",stream=false) {
   if (typeof model !== "string" || model.length > 256 ||
       !/^[^\s\x00-\x1f]+\/[^\s\x00-\x1f]+$/.test(model))
     throw Error("Choose a valid provider/model.");
   if (model.startsWith("group/")) throw Error("Routing groups cannot be fingerprinted reliably.");
   if (!["responses","chat"].includes(format)) throw Error("Unsupported API protocol.");
+  if (typeof stream!=="boolean") throw Error("Invalid streaming option.");
   if ([...jobs.values()].filter(x=>x.state==="running").length + starting >= MAX_RUNNING)
     throw Error("Two detections are already running.");
   starting++;
   try {
     if (!(await models()).includes(model)) throw Error("Model is not currently exposed by Gateway.");
     const {bank,detector} = await references();
-    const j = {id:randomUUID(),model,format,state:"running",startedAt:new Date().toISOString(),
+    const j = {id:randomUUID(),model,format,stream,state:"running",startedAt:new Date().toISOString(),
       finishedAt:null,completed:0,samples:[],analysis:null,error:null,controller:new AbortController()};
     jobs.set(j.id,j);
     prune();
@@ -230,8 +325,9 @@ export const Fingerprint = async () => ({tool:{
   models:{description:"List Magpie Gateway model IDs for fingerprinting.",
     args:schema({},[]),async execute(){return {models:await models()};}},
   start:{description:"Start native LM Detector analysis (three model challenges).",
-    args:schema({model:stringArg,format:{type:"string",enum:["responses","chat"]}},["model"]),
-    async execute({model,format}){return await start(model,format);}},
+    args:schema({model:stringArg,format:{type:"string",enum:["responses","chat"]},
+      stream:{type:"boolean"}},["model"]),
+    async execute({model,format,stream}){return await start(model,format,stream);}},
   status:{description:"Check fingerprint job status and relative candidate rankings.",
     args:schema({jobId:stringArg},["jobId"]),
     async execute({jobId}){return publicJob(findJob(jobId));}},

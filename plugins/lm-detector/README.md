@@ -12,7 +12,7 @@ magpie plugin add "$(pwd)"
 
 The npm dependency `lmfpd` supplies **only** `data/unified_bank.json` and `data/shared_detector.bin`; the challenge generator, features, positional classifier, detector decoding and scoring are vendored directly from `Ikaleio/lm-detector/shared` and executed in the plugin host. No CLI imports or subprocesses are used.
 
-The fork already includes Page tool bridge. Grant the plugin `providers:list` and `tool:run` permissions. Open **Model Fingerprint** from the sidebar or click **Detect model fingerprint** on a Provider row. Select `OpenAI Responses` or `Chat Completions` according to Gateway/model compatibility. The model is requested explicitly from the Gateway; avoid routing groups/fallbacks, since they mix underlying models.
+The fork already includes Page tool bridge. Grant the plugin `providers:list` and `tool:run` permissions. Open **Model Fingerprint** from the sidebar or click **Detect model fingerprint** on a Provider row. Select `OpenAI Responses` or `Chat Completions` according to Gateway/model compatibility. The Page enables SSE streaming by default, with a checkbox to switch back to non-streaming JSON. The backend `start` tool accepts an optional `stream: boolean` argument (default `false` for compatibility). The model is requested explicitly from the Gateway; avoid routing groups/fallbacks, since they mix underlying models.
 
 The Gateway defaults to `http://127.0.0.1:3425/v1` and its local development token `magpie`. To override when launching Magpie:
 
@@ -26,10 +26,10 @@ Non-loopback gateways require HTTPS and an explicit key. No upstream provider ke
 ## Design and limitations
 
 - One run makes three independent challenges (292–332 integers each), sends up to three requests concurrently and calls the real upstream `analyzeSharedOutputs` scorer, with partial-sample support. Routing groups are excluded because they can sample different models; configure model fallbacks carefully.
-- The non-streaming adapter requires a completed response and caps excess integers to the requested challenge length, matching upstream relaxed-mode scoring.
+- The adapter supports both non-streaming JSON and SSE for Responses / Chat Completions. SSE consumes incremental events, rejects abnormal completion, and stops once it has enough complete integers, matching upstream relaxed-mode capping.
 - The reference bank + detector are loaded together and checked for matching metadata; a mismatch fails safely. The npm `lmfpd` reference-data package is pinned to `0.0.1792416845676`, which passed the shared detector compatibility tests; a lockfile is still recommended for fully reproducible transitive dependencies.
 - A run can be cancelled. Jobs and final reports are in-memory only and are lost when the plugin host restarts. At most two run concurrently.
-- The current adapter reads **non-streaming** Responses or Chat Completions JSON. Models/Gateway routes that only support SSE need a streaming adapter in a follow-up. Tokenizer probing is not implemented.
+- Tokenizer probing is not implemented. The SSE adapter stops at the required integer count rather than waiting for a post-cap usage report; fingerprint scoring does not use token usage.
 - The `magpie.tool.run` bridge is a capability exposed by this fork, not by upstream Magpie. Existing plugin tools are also visible to the agent-facing plugin tools MCP server.
 - The plugin is bundled **in source**, but it is **not yet registered as a Go `pluginrt` built-in toggle** (those use a separate lifecycle/UI API). Until that integration exists, install it with `magpie plugin add` as above.
 - Each run can incur model tokens/cost. The ranking's calibrated confidence is **closed-set** against the included reference identities and cannot prove the true model identity.

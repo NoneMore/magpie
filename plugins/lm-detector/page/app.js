@@ -24,7 +24,7 @@
     const filtered=models.filter(m=>m.startsWith(p+"/"));
     $("model").replaceChildren(...filtered.map(m=>opt(m.slice(p.length+1),m)));
     if(filtered.includes(old))$("model").value=old;
-    for(const id of ["provider","model","format","reload"])$(id).disabled=!!jobId;
+    for(const id of ["provider","model","format","stream","reload"])$(id).disabled=!!jobId;
     $("run").disabled=!!jobId||!filtered.length;
   }
   async function tool(name,args={}) {
@@ -75,7 +75,8 @@
     try {
       const j=await tool("status",{jobId:id});if(jobId!==id)return;
       if(j.state!=="running"){finish(j);return;}
-      say("已完成 "+j.completed+"/3 次挑战…","busy");
+      const reading=j.samples.filter(s=>s.state==="streaming");
+      say("已完成 "+j.completed+"/3 次挑战"+(reading.length?"，流式接收 "+reading.map(s=>s.count).join("/")+" 个数字":"")+"…","busy");
       timer=setTimeout(poll,1600);
     }catch(e){stop();jobId=null;$("cancel").hidden=true;setModels();say("读取任务失败："+e.message,"error");}
   }
@@ -83,7 +84,7 @@
     if(jobId||!$("model").value)return;
     $("run").disabled=true;$("resultSection").hidden=true;say("正在建立检测任务…","busy");
     try {
-      const j=await tool("start",{model:$("model").value,format:$("format").value});
+      const j=await tool("start",{model:$("model").value,format:$("format").value,stream:$("stream").checked});
       jobId=j.jobId;started=Date.now();$("cancel").hidden=false;setModels();
       clock=setInterval(()=>$("elapsed").textContent=Math.floor((Date.now()-started)/1000)+"s",1000);
       await poll();

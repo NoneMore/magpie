@@ -135,3 +135,117 @@ test("oversized Gateway JSON responses fail without unbounded parsing",async()=>
     expect(done.error).toContain("Gateway response is too large");
   } finally {globalThis.fetch=originalFetch;}
 });
+
+function eventData(data) { return "data: "+JSON.stringify(data)+"\r\n\r\n"; }
+function chunkedSSE(frames) {
+  const data=new TextEncoder().encode(frames.join(""));
+  let offset=0;
+  return new Response(new ReadableStream({
+    pull(controller) {
+      if(offset>=data.length) { controller.close();return; }
+      const step=1+(offset%47);
+      controller.enqueue(data.slice(offset,offset+step));offset+=step;
+    }
+  }),{headers:{"content-type":"text/event-stream; charset=utf-8"}});
+}
+
+test("streaming Chat accumulates split SSE deltas and verifies terminal finish",async()=>{
+  const parts=Array(280).fill(1).join(", "),seen=[];
+  fakeGateway(async(url,init)=>{
+    seen.push(JSON.parse(init.body));
+    expect(init.headers.Accept).toBe("text/event-stream");
+    return chunkedSSE([
+      ": keepalive\r\n\r\n",
+      eventData({choices:[{index:0,delta:{content:parts.slice(0,410)}}]}),
+      eventData({choices:[{index:0,delta:{content:parts.slice(410)}}]}),
+      eventData({choices:[{index:0,delta:{},finish_reason:"stop"}]}),
+      "data: [DONE]\r\n\r\n"
+    ]);
+  });
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",stream:true});
+    expect(job.stream).toBe(true);
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples.every(s=>s.state==="complete" && s.count===280)).toBe(true);
+    expect(seen).toHaveLength(3);
+    expect(seen.every(body=>body.stream===true)).toBe(true);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("streaming Responses handles deltas and the response.completed event",async()=>{
+  const text=Array(280).fill(1).join(", ");
+  fakeGateway(async()=>chunkedSSE([
+    eventData({type:"response.output_text.delta",delta:text}),
+    eventData({type:"response.completed",response:{status:"completed",output:[]}})
+  ]));
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"responses",stream:true});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples.every(s=>s.state==="complete" && s.count===280)).toBe(true);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("streaming samples stop at the upstream relaxed-mode integer cap",async()=>{
+  let cancellations=0;
+  fakeGateway(async()=>{
+    const payload=new TextEncoder().encode(eventData({choices:[{index:0,delta:{
+      content:Array(400).fill(1).join(", ")+", "
+    }}]}));
+    return new Response(new ReadableStream({
+      start(controller){controller.enqueue(payload);},
+      cancel(){cancellations++;}
+    }),{headers:{"content-type":"text/event-stream"}});
+  });
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",stream:true});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples.every(s=>s.state==="truncated" && s.count===s.expectedCount)).toBe(true);
+    expect(cancellations).toBe(3);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test("streaming terminal failures cannot enter scoring",async()=>{
+  for (const format of ["chat","responses"]) {
+    fakeGateway(async()=>chunkedSSE(format==="chat"
+      ? [eventData({choices:[{index:0,delta:{content:Array(280).fill(1).join(", ")}}]}),
+        "data: [DONE]\n\n"]
+      : [eventData({type:"response.output_text.delta",delta:Array(280).fill(1).join(", ")}),
+        eventData({type:"response.incomplete",response:{status:"incomplete"}})]));
+    try {
+      const job=await tools.start.execute({model:fixtureModel,format,stream:true});
+      const done=await settled(job.jobId);
+      expect(done.state).toBe("failed");
+      expect(done.samples.every(s=>s.state==="failed")).toBe(true);
+    } finally {globalThis.fetch=originalFetch;}
+  }
+});
+
+test("cancel aborts active SSE readers without scoring partial output",async()=>{
+  let aborted=0;
+  fakeGateway(async(url,init)=>{
+    return new Response(new ReadableStream({
+      start(controller){
+        controller.enqueue(new TextEncoder().encode(eventData({choices:[{index:0,
+          delta:{content:"1, 2, 3, "}}]})));
+        init.signal.addEventListener("abort",()=>{aborted++;controller.error(Error("aborted"));},{once:true});
+      }
+    }),{headers:{"content-type":"text/event-stream"}});
+  });
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",stream:true});
+    for(let n=0;n<100;n++){
+      const state=await tools.status.execute({jobId:job.jobId});
+      if(state.samples.length===3 && state.samples.every(s=>s.state==="streaming"))break;
+      await Bun.sleep(5);
+    }
+    const cancelled=await tools.cancel.execute({jobId:job.jobId});
+    expect(cancelled.state).toBe("cancelled");
+    await Bun.sleep(20);
+    expect(aborted).toBe(3);
+    const result=await tools.status.execute({jobId:job.jobId});
+    expect(result.analysis).toBeNull();
+  } finally {globalThis.fetch=originalFetch;}
+});

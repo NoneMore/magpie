@@ -14,6 +14,7 @@
 <label for="model">模型</label><select id="model"><option>加载中…</option></select>
 <label for="format">API 协议</label>
 <select id="format"><option value="responses">OpenAI Responses</option><option value="chat">Chat Completions</option></select>
+<label for="stream"><input type="checkbox" id="stream" checked> 流式采样（SSE，推荐）</label>
 <div class="buttons"><button class="primary" id="run" disabled>开始检测</button><button id="cancel" hidden>取消检测</button><button id="reload">刷新模型</button></div>
 <div class="status" role="status" aria-live="polite"><i id="dot"></i><span id="message">正在连接…</span><span id="elapsed"></span></div>
 </section>
