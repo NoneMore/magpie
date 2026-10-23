@@ -136,7 +136,15 @@ to leave it alone. Each plugin receives
 `{provider, protocol, model, options, signal}` in `ctx`. For each plugin,
 `ctx.model` reflects the current `body.model`, including earlier hook changes.
 Errors, timeouts and non-JSON-object results keep the latest accepted
-body instead. No field-level restrictions or prompt strategy are imposed.
+body instead. An object with no changes after serialization, like `{...body}`,
+also preserves the original JSON bytes. No field-level restrictions or prompt
+strategy are imposed.
+
+A replacement object is still passed through JavaScript `Number` and
+`JSON.stringify`. If it changes anything, even untouched numeric fields
+outside JavaScript's safe integer range can lose precision. Return
+`undefined` (or an unchanged object) for a no-op, and avoid this object-based
+hook for requests that require lossless large JSON numbers.
 
 Example (a `*.hooks.mjs` file):
 

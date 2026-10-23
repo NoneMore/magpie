@@ -270,11 +270,19 @@ func GatewayPrepared(ctx context.Context, body []byte, info PreparedContext) []b
 	if err != nil || start.Err() != nil || !h.prepared {
 		return body
 	}
+	// Let Bun finish its chain before the RPC deadline, so earlier accepted
+	// changes can still be returned if a later hook times out.
+	deadline, _ := start.Deadline()
+	budget := time.Until(deadline) - time.Second
+	if budget <= 0 {
+		return body
+	}
 	var out json.RawMessage
 	err = h.call(start, "gatewayRequest", map[string]any{
 		"operation": "prepared",
 		"body":      json.RawMessage(body),
 		"context":   info,
+		"budgetMs":  budget.Milliseconds(),
 	}, &out)
 	if err != nil || len(out) == 0 || out[0] != '{' || !json.Valid(out) {
 		return body

@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 	"time"
 )
 
@@ -584,5 +586,37 @@ func TestPreparedHookChainSeesCurrentModel(t *testing.T) {
 	}
 	if got.Model != "gpt-5.6" || got.SeenModel != got.Model {
 		t.Fatalf("second hook observed a stale model: %s", out)
+	}
+}
+
+func TestPreparedHookReturnedCopyPreservesJSON(t *testing.T) {
+	sandbox(t)
+	gatewayFixture(t, `export function onPreparedRequest(body) { return {...body} }`)
+	// The RPC has parsed this integer as JavaScript Number. A no-op must
+	// leave the original bytes in Go instead of returning the rounded value.
+	body := []byte(`{ "model":"gpt-5.5", "metadata":{"id":9007199254740993} }`)
+	if got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"}); !reflect.DeepEqual(got, body) {
+		t.Fatalf("no-op object rounded JSON: %s", got)
+	}
+}
+
+func TestPreparedHookTimeoutKeepsEarlierChangeAndRecordsFailure(t *testing.T) {
+	sandbox(t)
+	first := gatewayFixture(t, `export function onPreparedRequest(body) { return {...body, instructions:"first"} }`)
+	second := gatewayFixture(t, `export async function onPreparedRequest(body) {
+		await new Promise(resolve => setTimeout(resolve, 1000))
+		return {...body, instructions:"late"}
+	}`)
+	if err := SetOptions(second, map[string]any{"gatewayTimeoutMs": 100}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"instructions":"original","input":[]}`)
+	got := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex"})
+	if gjson.GetBytes(got, "instructions").String() != "first" {
+		t.Fatalf("later hook timeout lost earlier accepted change: %s", got)
+	}
+	states := GatewayStates(t.Context())
+	if states[first].Calls != 1 || states[second].Calls != 1 || states[second].Failures != 1 {
+		t.Fatalf("prepared hook diagnostics not updated: %+v", states)
 	}
 }

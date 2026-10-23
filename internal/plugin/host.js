@@ -1389,7 +1389,8 @@ async function gatewayFinish(run, p, signal) {
 async function gatewayPrepared(p, signal) {
   const hooks = gatewayHooks.filter((h) => typeof h.onPreparedRequest === "function")
   if (!hooks.length) return null
-  const total = AbortSignal.any([signal, AbortSignal.timeout(gatewayBudget())])
+  // Leave the Go RPC time to deliver earlier successful hook results.
+  const total = AbortSignal.any([signal, AbortSignal.timeout(Math.min(gatewayBudget(), p.budgetMs ?? gatewayBudget()))])
   let body = p.body
   let changed = false
   for (const h of hooks) {
@@ -1397,6 +1398,8 @@ async function gatewayPrepared(p, signal) {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
     const ownSignal = AbortSignal.any([total, ctl.signal])
+    const started = performance.now()
+    let outcome = "skipped"
     try {
       const ctx = { ...p.context, model: typeof body.model === "string" ? body.model : "", options: structuredClone(h.options), signal: ownSignal }
       const result = await bounded(Promise.resolve().then(() => h.onPreparedRequest(structuredClone(body), ctx)), ownSignal)
@@ -1404,11 +1407,20 @@ async function gatewayPrepared(p, signal) {
       if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("invalid prepared body")
       const next = JSON.parse(JSON.stringify(result))
       if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("invalid serialized body")
+      // Returning a copy with no changes must preserve the exact incoming JSON.
+      if (JSON.stringify(next) === JSON.stringify(body)) continue
       body = next
       changed = true
+      outcome = "ready"
     } catch {
+      outcome = ownSignal.aborted ? (signal.aborted ? "cancelled" : "timeout") : "error"
       if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: prepared request hook failed or timed out; keeping request` })
     } finally {
+      h.state.calls++
+      if (outcome === "error" || outcome === "timeout") h.state.failures++
+      h.state.totalMillis += performance.now() - started
+      h.state.lastOutcome = outcome
+      h.state.lastBytes = 0
       clearTimeout(timer)
       ctl.abort()
     }
