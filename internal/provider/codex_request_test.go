@@ -151,6 +151,80 @@ func TestCodexBodyAsCodexSendsIt(t *testing.T) {
 	}
 }
 
+// Caller-owned instructions are a personal-fork opt-in for the built-in
+// Codex account. The default, independent messages and Codex's other
+// request adaptations stay as they were.
+func TestCodexBodyCallerPromptOptIn(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "models_cache.json"),
+		[]byte(`{"models":[{"slug":"gpt-5.5","model_messages":{"instructions_template":"Native Codex"}}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type sent struct {
+		Instructions string           `json:"instructions"`
+		Key          string           `json:"prompt_cache_key"`
+		Input        []map[string]any `json:"input"`
+		Tools        []map[string]any `json:"tools"`
+		Stream       bool             `json:"stream"`
+		Store        bool             `json:"store"`
+	}
+	decode := func(body string) sent {
+		t.Helper()
+		var got sent
+		if err := json.Unmarshal(codexBody([]byte(body)), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	const request = `{"model":"gpt-5.5","instructions":"You are Pi.","prompt_cache_key":"thread-1","stream":false,"store":true,"tools":[{"type":"function","name":"echo","parameters":{"type":"object"}}],"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"Independent"}]},{"type":"message","role":"user","content":"hello"}]}`
+	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "0")
+	native := decode(request)
+	if native.Instructions != "Native Codex" || native.Key != "thread-1" || len(native.Input) != 3 {
+		t.Fatalf("default prompt changed: %+v", native)
+	}
+
+	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "1")
+	caller := decode(request)
+	if caller.Instructions != "You are Pi." || len(caller.Input) != 2 ||
+		caller.Input[0]["role"] != "developer" ||
+		caller.Input[0]["content"].([]any)[0].(map[string]any)["text"] != "Independent" ||
+		len(caller.Tools) != 1 || caller.Tools[0]["name"] != "echo" ||
+		!caller.Stream || caller.Store {
+		t.Fatalf("caller policy lost original content or Codex adaptations: %+v", caller)
+	}
+	if caller.Key == "" || caller.Key == native.Key || len(caller.Key) != 36 || decode(request).Key != caller.Key {
+		t.Fatalf("caller key should be deterministic and isolated: %q vs %q", caller.Key, native.Key)
+	}
+
+	// Empty and absent caller instructions keep the native prompt, without
+	// removing independent developer items or changing a caller's key.
+	for _, field := range []string{"", `,"instructions":""`, `,"instructions":"  "`} {
+		got := decode(`{"model":"gpt-5.5"` + field + `,"prompt_cache_key":"thread-1","input":[{"type":"message","role":"developer","content":"Independent"}]}`)
+		if got.Instructions != "Native Codex" || got.Key != "thread-1" ||
+			len(got.Input) != 1 || got.Input[0]["role"] != "developer" {
+			t.Fatalf("empty caller %q changed native fallback: %+v", field, got)
+		}
+	}
+
+	// Generated cache keys are partitioned too, but remain stable for the
+	// same conversation within the caller policy.
+	const automatic = `{"model":"gpt-5.5","instructions":"You are Pi.","input":[{"type":"message","role":"user","content":"hello"}]}`
+	callerAuto := decode(automatic).Key
+	if callerAuto == "" || callerAuto != decode(automatic).Key {
+		t.Fatalf("unstable caller cache key: %q", callerAuto)
+	}
+	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "0")
+	if key := decode(automatic).Key; key == "" || key == callerAuto {
+		t.Fatalf("generated native and caller keys collided: %q", key)
+	}
+	t.Setenv("MAGPIE_CODEX_CALLER_PROMPT", "true")
+	if got := decode(request); got.Instructions != "Native Codex" {
+		t.Fatalf("unexpected implicit opt-in: %+v", got)
+	}
+}
+
 // A conversation whose client names none gets a key of its own, the same on
 // every turn; a client's own key stays.
 func TestCodexPromptCacheKey(t *testing.T) {
