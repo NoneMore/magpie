@@ -16,6 +16,8 @@ const MAX_RUNNING = 2, MAX_HISTORY = 40, MAX_AGE = 24 * 60 * 60 * 1000;
 const MAX_REPEAT = 20, DEFAULT_TIMEOUT = 120;
 const DEFAULT_GATEWAY = "http://127.0.0.1:3425/v1";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+// Match upstream sample-distribution.ts: UI warning only, never affects scoring.
+const ANOMALOUS_MINIMUM = 200;
 const stringArg = {type:"string",minLength:1};
 const schema = (properties,required) => ({type:"object",properties,required,additionalProperties:false});
 let starting = 0, referencePromise;
@@ -260,6 +262,10 @@ async function sample(job,index,challenge) {
     }
     const numbers = parseNumbers(text);
     out.count = Math.min(numbers.length,challenge.expected_count);
+    out.minimumValidNumber = numbers.length
+      ? numbers.reduce((minimum,value)=>Math.min(minimum,value),Infinity) : null;
+    out.anomalousDistribution = out.minimumValidNumber !== null &&
+      out.minimumValidNumber >= ANOMALOUS_MINIMUM;
     if (numbers.length < Math.max(80,Math.ceil(challenge.expected_count*.55)))
       throw Error("Too few valid integers (" + numbers.length + "/" + challenge.expected_count + ").");
     // Match upstream relaxed-mode scoring: ignore integers beyond the requested length.
@@ -282,7 +288,8 @@ async function execute(j,bank,detector) {
       j.round=round;
       const challenges=generateChallenges(j.count);
       j.samples=challenges.map((c,i)=>({
-        index:i+1,state:"queued",count:0,expectedCount:c.expected_count,error:null
+        index:i+1,state:"queued",count:0,expectedCount:c.expected_count,
+        minimumValidNumber:null,anomalousDistribution:false,error:null
       }));
       const outputs=new Array(j.count);
       let next=0;

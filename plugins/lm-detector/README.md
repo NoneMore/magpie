@@ -41,6 +41,7 @@ The plugin runs at most two *jobs* at once; each job can make at most `count × 
 ## Design and limitations
 
 - Each round makes 1–3 independent challenges (292–332 integers each), sends up to three requests concurrently and calls the real upstream `analyzeSharedOutputs` scorer, with partial-sample support when strict mode is off. Routing groups are excluded because they can sample different models; configure model fallbacks carefully.
+- Each completed sample reports its minimum valid integer and a display-only abnormal-distribution flag when that minimum is at least 200, matching upstream LM Detector. The Page warns that the round may be unreliable and recommends a fresh run with new random prompts; the warning does not change ranking or probabilities.
 - The adapter supports both non-streaming JSON and SSE for Responses / Chat Completions. In relaxed mode, SSE consumes incremental events and caps once it has enough complete integers; strict mode waits for normal completion. SSE timeout covers the first body chunk only; JSON timeout covers the complete response.
 - The reference bank + detector are loaded together and checked for matching metadata; a mismatch fails safely. The npm `lmfpd` reference-data package is pinned to `0.0.1792416845676`, which passed the shared detector compatibility tests; a lockfile is still recommended for fully reproducible transitive dependencies.
 - A run can be cancelled. Jobs and final reports are in-memory only and are lost when the plugin host restarts. At most two run concurrently.

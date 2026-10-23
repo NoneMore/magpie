@@ -31,4 +31,5 @@ details{margin-top:18px;}summary{cursor:pointer;}pre{white-space:pre-wrap;max-he
 .config-grid select{background:transparent;color:inherit;}
 .strict-option{align-self:end;padding-bottom:5px;}.strict-option label{margin-top:10px;}.strict-option small{display:block;line-height:1.5;}
 #roundNotice{font-size:12px;line-height:1.5;margin:8px 0 14px;}
+.distribution-warning{border-left:3px solid #cc9933;background:var(--magpie-card,#9991);padding:9px 12px;border-radius:5px;font-size:12px;line-height:1.6;margin:8px 0 14px;}
 @media(max-width:620px){.config-grid{grid-template-columns:1fr;}}

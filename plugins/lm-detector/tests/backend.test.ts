@@ -50,6 +50,40 @@ test("native backend samples via Gateway and scores without a CLI",async()=>{
   } finally {globalThis.fetch=originalFetch;}
 });
 
+test("minimum valid integer threshold matches upstream abnormal-distribution warning",async()=>{
+  for(const minimum of [199,200]){
+    fakeGateway(async()=>Response.json({status:"completed",output:[{
+      type:"message",content:[{type:"output_text",text:Array(300).fill(minimum).join(", ")}]
+    }]}));
+    try {
+      const job=await tools.start.execute({model:fixtureModel,count:1});
+      const done=await settled(job.jobId);
+      expect(done.state).toBe("done");
+      expect(done.samples[0].minimumValidNumber).toBe(minimum);
+      expect(done.samples[0].anomalousDistribution).toBe(minimum>=200);
+      expect(done.rounds[0].samples[0].anomalousDistribution).toBe(minimum>=200);
+      expect(done.rounds[0].analysis.decision).toBe("not_model");
+    } finally {globalThis.fetch=originalFetch;}
+  }
+});
+
+test("relaxed SSE capping still retains the abnormal-distribution warning",async()=>{
+  fakeGateway(async()=>chunkedSSE([
+    eventData({choices:[{index:0,delta:{
+      content:Array(400).fill(200).join(", ")+", "
+    }}]})
+  ]));
+  try {
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",stream:true,count:1});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples[0].state).toBe("truncated");
+    expect(done.samples[0].minimumValidNumber).toBe(200);
+    expect(done.samples[0].anomalousDistribution).toBe(true);
+    expect(done.rounds[0].samples[0].anomalousDistribution).toBe(true);
+  } finally {globalThis.fetch=originalFetch;}
+});
+
 test("unlisted model is rejected before any paid sample",async()=>{
   let posts=0;
   fakeGateway(async()=>{posts++;return Response.json({});});

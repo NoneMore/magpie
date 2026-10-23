@@ -61,6 +61,12 @@
     $("winnerNote").textContent=a?.evidence?.reason||r.error||a?.decision||"";
     $("sampleCount").textContent="第 "+r.round+"/"+resultJob.repeat+" 轮 · 有效样本 "+
       (a?.used_outputs||0)+"/"+resultJob.count;
+    const anomalous=(r.samples||[]).filter(s=>s.anomalousDistribution);
+    $("distributionWarning").hidden=!anomalous.length;
+    $("distributionWarning").textContent=anomalous.length
+      ? "⚠ 样本 "+anomalous.map(s=>s.index).join("、")+
+        " 的最小有效数字不低于 200，数字分布异常，本轮检测结果不可靠。请重新检测以生成新的随机提示词。"
+      : "";
     $("results").replaceChildren(...(a?.results||[]).slice(0,15).map(item=>{
       const tr=document.createElement("tr"),name=document.createElement("td"),
         p=document.createElement("td"),s=document.createElement("td");
