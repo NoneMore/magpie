@@ -394,6 +394,12 @@ Routing's New group buttons share `newGroup`, which asks before replacing a
 dirty group draft; Cancel retains the draft and Discard opens the new editor.
 `newGroupWith` applies the same guard when creating a group from a model and
 waits for `show` to accept navigation before creating its draft.
+The Routing page's head also has Routing groups (`#rtGoGroups`), since the
+groups sit below every request. Its click goes through `scrollOnPurpose`,
+brings `.rt-gsec` to the top of the view and focuses it; the page's layout is
+unchanged. `fitGo` gives it only the head's spare room: named, its arrow
+alone, or left out, so nothing else in the head moves or wraps for it
+(`routing-groups-jump.test.cjs`).
 
 The Plugins page updates the npm search-results section when a search answers,
 leaving suggested plugin cards in place so a click begun before the answer still

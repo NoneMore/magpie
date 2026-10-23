@@ -597,6 +597,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	go provider.KeepPluginsCheckedIn(ctx)
 	// and moves the built-in subscriptions being retired onto their plugins
 	go provider.KeepRetiringMoved(ctx)
+	// and fetches the partner list every hour, asked for or not
+	go provider.KeepPartnersFresh(ctx)
 	go provider.KeepPluginsListed(ctx) // models a plugin's vendor drops or adds, while magpie runs
 	// and fetches the lists of the providers the user asked to keep fresh (#2135)
 	go provider.KeepListsFresh(ctx)
@@ -786,7 +788,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 // told its quotas is told those of what it may use (scopeQuotas, #2216).
 func (s *Server) quotas(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
-		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
+		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Network and sharing → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
 		return
 	}
 	scope, ok := scopeQuotas(w, r)
@@ -810,7 +812,7 @@ func (s *Server) quotas(w http.ResponseWriter, r *http.Request) {
 // /v1/magpie/quotas stays the snapshot.
 func (s *Server) quotasHistory(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
-		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
+		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Network and sharing → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
 		return
 	}
 	scope, ok := scopeQuotas(w, r)
@@ -826,7 +828,7 @@ func (s *Server) quotasHistory(w http.ResponseWriter, r *http.Request) {
 // show: its own cache, however old, and no vendor asked for it.
 func (s *Server) quotaCards(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
-		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
+		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Network and sharing → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
 		return
 	}
 	scope, ok := scopeQuotas(w, r)
@@ -852,7 +854,7 @@ const remoteRefreshGap = 30 * time.Second
 // is named, then the cards are answered as quotaCards answers them.
 func (s *Server) quotaCardsRefresh(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
-		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
+		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Network and sharing → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
 		return
 	}
 	scope, ok := scopeQuotas(w, r)
@@ -1242,9 +1244,15 @@ func unprefixed(id string) string {
 // on (#536) — into the model and the level, "" for none. As a routing
 // group's member is read (#189), only a level's name after the last colon is
 // one, and a model a provider has by the whole id ("x:high") is taken whole.
+//
+// A level spelled "off" (":off") is none, as a body's effort "off" is
+// (offAsNone).
 func askedAt(id string) (string, string) {
 	bare, marked := strings.CutSuffix(id, "[1m]")
 	m, e := provider.MemberEffort(bare)
+	if i := strings.LastIndex(bare, ":"); e == "" && i > 0 && strings.EqualFold(bare[i+1:], "off") {
+		m, e = provider.MemberEffort(bare[:i] + ":none")
+	}
 	if e == "" {
 		return id, ""
 	}
@@ -1597,6 +1605,9 @@ func estimate(req *Request) int {
 // serve routes one parsed-enough request to its provider.
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Protocol, body []byte) {
 	start := time.Now()
+	// a client's "off" is magpie's none, for every route and check below
+	// that reads the body's effort (plugins#334)
+	body = offAsNone(from, body)
 	// the upstream names in force for this request, read once here rather
 	// than once per place a name is looked up below
 	r = withWires(r)
@@ -2328,9 +2339,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	roomFor, roomCap := "", 0
 	// the key or subscription account the last try went to (#557)
 	providerKeyID, providerKeyName, providerAccount := "", "", ""
-	var other *Try                 // the first failure that wasn't an allowance run out
-	var forbade []forbidden        // the plain 403s rested so far (forbiddenAlike)
-	autoReset := resetFirst != nil // a Codex or Claude reset looked at, once a request
+	var other *Try                    // the first failure that wasn't an allowance run out
+	var forbade []forbidden           // the plain 403s rested so far (forbiddenAlike)
+	autoReset := resetFirst != nil    // a Codex or Claude reset looked at, once a request
+	creditsAsked := map[string]bool{} // Codex accounts asked again onto their credits, once each (creditsAgain)
 	// what the tries' held streams sent the agent ahead of a reply (#751)
 	kept := &keptAlive{proto: from, told: start}
 	if k := handedOnOf(r); k != nil {
@@ -3308,6 +3320,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				matesLast(cands[i+1:], c)
 				continue
 			}
+		}
+		if hw.failed() && !hw.passing && !hw.turnedAway && !hw.refused && !creditsAsked[c.rest] && creditsAgain(c, hw.code(), hw.errBody()) {
+			// a Codex account that holds credits, refused as out of its
+			// allowance: ChatGPT may turn away the turn that uses the
+			// window up before it spends the credits, and answers the
+			// next on them (Zhenzhen on Discord: the running session
+			// ended "usage exhausted" while a new one answered). It is
+			// asked again at once, once a request, rather than the turn
+			// moved off it or ended
+			creditsAsked[c.rest] = true
+			try.Fail, try.Credits = failQuota, true
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+			skipped = append(skipped, c.label()+": "+call.Error+" (asked again, to spend its credits)")
+			i--
+			continue
 		}
 		if !last && hw.failed() {
 			if f := failure(hw.code(), hw.errBody()); other == nil && f != failQuota && f != failCredit {
@@ -6551,6 +6578,67 @@ func conversationID(in http.Header, body []byte) string {
 	}
 	sum := sha256.Sum256(first)
 	return "magpie-" + hex.EncodeToString(sum[:12])
+}
+
+// offSpelled is a client's effort spelled "off", which no OpenAI API
+// takes: a client asking reasoning off by that word (plugins#334, raw
+// reasoning_effort "off" to a Command Code DeepSeek fell back to its lowest
+// level and still thought).
+func offSpelled(e string) bool { return strings.EqualFold(strings.TrimSpace(e), "off") }
+
+// offAsNone is a Chat or Responses body asking reasoning "off"
+// (reasoning_effort, or reasoning.effort) asking for magpie's own off
+// level, none, instead: what every check and route reads the effort by,
+// and what fitEffort fits to the model's own off level, or its least
+// where it has none, as "none" asked is. A body with no such field goes
+// as it came.
+func offAsNone(from provider.Protocol, body []byte) []byte {
+	if from != provider.Chat && from != provider.Responses || !saysOff(body) {
+		return body
+	}
+	var v struct {
+		ReasoningEffort *string                    `json:"reasoning_effort"`
+		Reasoning       map[string]json.RawMessage `json:"reasoning"`
+	}
+	if decodeJSON(body, &v) != nil {
+		return body
+	}
+	fields := map[string]any{}
+	var e string
+	if v.ReasoningEffort != nil && offSpelled(*v.ReasoningEffort) {
+		fields["reasoning_effort"] = "none"
+	}
+	if decodeJSON(v.Reasoning["effort"], &e) == nil && offSpelled(e) {
+		v.Reasoning["effort"] = json.RawMessage(`"none"`)
+		fields["reasoning"] = v.Reasoning
+	}
+	if len(fields) == 0 {
+		return body
+	}
+	return withFields(body, fields)
+}
+
+// saysOff is whether body has an effort field valued "off" anywhere,
+// looked for without parsing it: serve looks at every request's body,
+// however large, and only one naming off is parsed (offAsNone).
+func saysOff(body []byte) bool {
+	key := []byte(`effort"`)
+	for rest := body; ; {
+		i := bytes.Index(rest, key)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(key):]
+		v := bytes.TrimLeft(rest, " \t\r\n")
+		if v, ok := bytes.CutPrefix(v, []byte(":")); ok {
+			v = bytes.TrimLeft(v, " \t\r\n")
+			if s, ok := bytes.CutPrefix(v, []byte(`"`)); ok {
+				if j := bytes.IndexByte(s, '"'); j >= 0 && offSpelled(string(s[:j])) {
+					return true
+				}
+			}
+		}
+	}
 }
 
 // offEffort is an effort turning reasoning off, or as near off as asked.
