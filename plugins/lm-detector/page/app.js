@@ -1,7 +1,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   let models = [], providerNames = new Map(), chosenProvider = "", jobId = null, active = false;
-  let timer = null, clock = null, started = 0;
+  let timer = null, clock = null, started = 0, resultJob = null;
   function say(message, kind="") {
     $("message").textContent = message; $("dot").className = kind;
   }
@@ -19,12 +19,21 @@
     if(missing)say("所选 Provider 当前没有可检测的 Gateway 模型","error");
     return !missing;
   }
+  function syncCount() {
+    const count=Number($("count").value),old=Number($("parallel").value);
+    $("parallel").replaceChildren(...Array.from({length:count},(_,i)=>opt(String(i+1),String(i+1))));
+    $("parallel").value=String(Math.min(count,old||count));
+    if(count!==3)$("strict").checked=false;
+    $("strict").disabled=!!jobId||count!==3;
+  }
   function setModels() {
     const p=$("provider").value, old=$("model").value;
     const filtered=models.filter(m=>m.startsWith(p+"/"));
     $("model").replaceChildren(...filtered.map(m=>opt(m.slice(p.length+1),m)));
     if(filtered.includes(old))$("model").value=old;
-    for(const id of ["provider","model","format","stream","reload"])$(id).disabled=!!jobId;
+    for(const id of ["provider","model","format","stream","reload","effort",
+      "timeout","count","parallel","repeat"])$(id).disabled=!!jobId;
+    $("strict").disabled=!!jobId||Number($("count").value)!==3;
     $("run").disabled=!!jobId||!filtered.length;
   }
   async function tool(name,args={}) {
@@ -45,29 +54,53 @@
     }catch(e){say("读取失败："+e.message,"error");}
   }
   function stop(){clearTimeout(timer);clearInterval(clock);timer=null;clock=null;}
-  function render(job) {
-    const a=job.analysis;$("resultSection").hidden=!a;if(!a)return;
-    $("winner").textContent=a.prediction_name||a.prediction||"无法判断";
-    $("winnerNote").textContent=a.evidence?.reason||a.decision||"";
-    $("sampleCount").textContent="有效样本 "+(a.used_outputs||0)+"/3";
-    $("results").replaceChildren(...(a.results||[]).slice(0,15).map(r=>{
-      const tr=document.createElement("tr"),name=document.createElement("td"),p=document.createElement("td"),s=document.createElement("td");
-      name.textContent=r.display_name||r.model||"—";p.className="num";s.className="num";
-      if(typeof r.probability==="number"&&Number.isFinite(r.probability)){
+  function renderRound(index) {
+    const r=resultJob?.rounds?.[index],a=r?.analysis;
+    if(!r)return;
+    $("winner").textContent=a?.prediction_name||a?.prediction||"本轮未评分";
+    $("winnerNote").textContent=a?.evidence?.reason||r.error||a?.decision||"";
+    $("sampleCount").textContent="第 "+r.round+"/"+resultJob.repeat+" 轮 · 有效样本 "+
+      (a?.used_outputs||0)+"/"+resultJob.count;
+    $("results").replaceChildren(...(a?.results||[]).slice(0,15).map(item=>{
+      const tr=document.createElement("tr"),name=document.createElement("td"),
+        p=document.createElement("td"),s=document.createElement("td");
+      name.textContent=item.display_name||item.model||"—";p.className="num";s.className="num";
+      if(typeof item.probability==="number"&&Number.isFinite(item.probability)){
         const bar=document.createElement("span"),fill=document.createElement("span");
-        bar.className="bar";fill.style.width=Math.min(100,Math.max(0,r.probability*100))+"%";
-        bar.append(fill);p.append(bar,document.createTextNode((r.probability*100).toFixed(1)+"%"));
+        bar.className="bar";fill.style.width=Math.min(100,Math.max(0,item.probability*100))+"%";
+        bar.append(fill);p.append(bar,document.createTextNode((item.probability*100).toFixed(1)+"%"));
       }else p.textContent="—";
-      s.textContent=typeof r.score==="number"&&Number.isFinite(r.score)?r.score.toFixed(3):"—";
+      s.textContent=typeof item.score==="number"&&Number.isFinite(item.score)?item.score.toFixed(3):"—";
       tr.append(name,p,s);return tr;
     }));
-    $("diagnostics").textContent=JSON.stringify({decision:a.decision,probability_status:a.probability_status,
-      evidence:a.evidence,samples:job.samples},null,2);
+    $("diagnostics").textContent=JSON.stringify({
+      round:r.round,request:{effort:resultJob.effort,timeout:resultJob.timeout,
+        count:resultJob.count,parallel:resultJob.parallel,repeat:resultJob.repeat,
+        strict:resultJob.strict},decision:a?.decision,probability_status:a?.probability_status,
+      evidence:a?.evidence,error:r.error,samples:r.samples
+    },null,2);
+  }
+  function render(job) {
+    const rounds=job.rounds||[];
+    $("resultSection").hidden=!rounds.length;
+    if(!rounds.length)return;
+    resultJob=job;
+    $("roundResult").replaceChildren(...rounds.map((r,i)=>opt(
+      "第 "+r.round+" 轮 · "+(r.analysis?.prediction_name||r.analysis?.prediction||r.error||"未评分"),String(i))));
+    const selected=rounds.length-1;
+    $("roundResult").value=String(selected);
+    $("roundNotice").textContent=rounds.filter(r=>!r.analysis || r.analysis.decision==="unscorable").length
+      ? "部分轮次未能评分，请选择对应轮次查看错误和样本状态。"
+      : "各轮独立评分，不会合并闭集概率。";
+    renderRound(selected);
   }
   function finish(job){
     stop();jobId=null;$("cancel").hidden=true;$("elapsed").textContent="";setModels();
-    if(job.state==="done"){say("检测完成","ok");render(job);}
-    else if(job.state==="cancelled")say("检测已取消");
+    render(job);
+    if(job.state==="done") {
+      say(job.rounds.some(r=>!r.analysis || r.analysis.decision==="unscorable")
+        ?"检测结束，部分轮次未评分":"检测完成","ok");
+    }else if(job.state==="cancelled")say("检测已取消");
     else say("检测失败："+(job.error||"未知错误"),"error");
   }
   async function poll() {
@@ -76,7 +109,8 @@
       const j=await tool("status",{jobId:id});if(jobId!==id)return;
       if(j.state!=="running"){finish(j);return;}
       const reading=j.samples.filter(s=>s.state==="streaming");
-      say("已完成 "+j.completed+"/3 次挑战"+(reading.length?"，流式接收 "+reading.map(s=>s.count).join("/")+" 个数字":"")+"…","busy");
+      say("第 "+j.round+"/"+j.repeat+" 轮，已完成 "+j.completed+"/"+(j.count*j.repeat)+
+        " 次挑战"+(reading.length?"，流式接收 "+reading.map(s=>s.count).join("/")+" 个数字":"")+"…","busy");
       timer=setTimeout(poll,1600);
     }catch(e){stop();jobId=null;$("cancel").hidden=true;setModels();say("读取任务失败："+e.message,"error");}
   }
@@ -84,7 +118,13 @@
     if(jobId||!$("model").value)return;
     $("run").disabled=true;$("resultSection").hidden=true;say("正在建立检测任务…","busy");
     try {
-      const j=await tool("start",{model:$("model").value,format:$("format").value,stream:$("stream").checked});
+      const args={model:$("model").value,format:$("format").value,stream:$("stream").checked,
+        timeout:Number($("timeout").value),count:Number($("count").value),
+        parallel:Number($("parallel").value),repeat:Number($("repeat").value),
+        strict:$("strict").checked};
+      const effort=$("effort").value.trim();
+      if(effort)args.effort=effort;
+      const j=await tool("start",args);
       jobId=j.jobId;started=Date.now();$("cancel").hidden=false;setModels();
       clock=setInterval(()=>$("elapsed").textContent=Math.floor((Date.now()-started)/1000)+"s",1000);
       await poll();
@@ -104,6 +144,9 @@
   magpie.ready.then(async()=>{
     active=true;
     $("provider").addEventListener("change",()=>{chosenProvider="";setModels();});
+    $("count").addEventListener("change",syncCount);
+    $("roundResult").addEventListener("change",()=>renderRound(Number($("roundResult").value)));
+    syncCount();
     $("run").addEventListener("click",run);
     $("cancel").addEventListener("click",cancel);
     $("reload").addEventListener("click",load);
