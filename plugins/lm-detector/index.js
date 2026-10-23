@@ -13,6 +13,7 @@ import {analyzeSharedOutputs, supportsSharedDetector} from "./shared/shared-dete
 const require = createRequire(import.meta.url);
 const jobs = new Map();
 const MAX_RUNNING = 2, MAX_HISTORY = 40, MAX_AGE = 24 * 60 * 60 * 1000;
+const MAX_REPEAT = 20, DEFAULT_TIMEOUT = 120;
 const DEFAULT_GATEWAY = "http://127.0.0.1:3425/v1";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const stringArg = {type:"string",minLength:1};
@@ -88,8 +89,11 @@ async function references() {
 
 function publicJob(j) {
   return {jobId:j.id,model:j.model,format:j.format,state:j.state,
-    stream:j.stream,startedAt:j.startedAt,finishedAt:j.finishedAt || null,
+    stream:j.stream,effort:j.effort ?? null,timeout:j.timeout,count:j.count,
+    parallel:j.parallel,repeat:j.repeat,strict:j.strict,round:j.round,
+    startedAt:j.startedAt,finishedAt:j.finishedAt || null,
     completed:j.completed,samples:j.samples.map(s=>({...s})),
+    rounds:j.rounds.map(r=>({...r,samples:r.samples.map(s=>({...s}))})),
     error:j.error || null,analysis:j.analysis || null};
 }
 function findJob(id) {
@@ -127,7 +131,7 @@ function pickText(payload,format) {
     .map(x=>typeof x.text==="string"?x.text:"").join("");
 }
 // Consume OpenAI-compatible SSE without buffering the complete stream.
-async function streamText(response,format,expected,out) {
+async function streamText(response,format,expected,out,strict,onFirstChunk) {
   if (!response.body) throw Error("Gateway returned an empty SSE body.");
   const reader=response.body.getReader(),decoder=new TextDecoder();
   let buffer="",text="",bytes=0,finished=false,finish="",capped=false;
@@ -138,7 +142,7 @@ async function streamText(response,format,expected,out) {
     // A trailing digit may still be part of the next streamed token.
     const numbers=parseNumbers(text.replace(/\d+$/,""));
     out.count=Math.min(numbers.length,expected);
-    if (numbers.length>=expected) {
+    if (!strict && numbers.length>=expected) {
       text=numbers.slice(0,expected).join(", ");
       out.count=expected;
       capped=true;
@@ -187,6 +191,7 @@ async function streamText(response,format,expected,out) {
     while (!finished && !capped) {
       const {done,value}=await reader.read();
       if (done) break;
+      if (value.byteLength) onFirstChunk();
       bytes+=value.byteLength;
       if (bytes>MAX_RESPONSE_BYTES) throw Error("Gateway SSE response is too large.");
       buffer+=decoder.decode(value,{stream:true});
@@ -215,7 +220,7 @@ async function streamText(response,format,expected,out) {
 async function sample(job,index,challenge) {
   const out = job.samples[index];
   out.state = "waiting";
-  let key = "";
+  let key = "", deadlineTimer, deadline;
   try {
     const config = gateway();
     const {base} = config;
@@ -223,8 +228,14 @@ async function sample(job,index,challenge) {
     const body = job.format === "chat"
       ? {model:job.model,messages:[{role:"user",content:challenge.prompt}],stream:job.stream}
       : {model:job.model,input:[{role:"user",content:challenge.prompt}],stream:job.stream,store:false};
+    if (job.effort) {
+      if (job.format === "chat") body.reasoning_effort = job.effort;
+      else body.reasoning = {effort:job.effort};
+    }
     const path = job.format === "chat" ? "/chat/completions" : "/responses";
-    const signal = AbortSignal.any([job.controller.signal,AbortSignal.timeout(250000)]);
+    deadline = new AbortController();
+    deadlineTimer = setTimeout(()=>deadline.abort(Error("Request timed out.")),job.timeout*1000);
+    const signal = AbortSignal.any([job.controller.signal,deadline.signal]);
     const response = await fetch(base + path, {
       method:"POST",headers:{"Content-Type":"application/json",
         Accept:job.stream?"text/event-stream":"application/json",Authorization:"Bearer " + key},
@@ -239,7 +250,8 @@ async function sample(job,index,challenge) {
     let text,capped=false;
     if (isSSE) {
       out.state="streaming";
-      ({text,capped}=await streamText(response,job.format,challenge.expected_count,out));
+      ({text,capped}=await streamText(response,job.format,challenge.expected_count,out,
+        job.strict,()=>{clearTimeout(deadlineTimer);deadlineTimer=null;}));
     } else {
       const payload=await boundedJson(response);
       if (payload?.error) throw Error("Gateway rejected the challenge.");
@@ -251,60 +263,96 @@ async function sample(job,index,challenge) {
     if (numbers.length < Math.max(80,Math.ceil(challenge.expected_count*.55)))
       throw Error("Too few valid integers (" + numbers.length + "/" + challenge.expected_count + ").");
     // Match upstream relaxed-mode scoring: ignore integers beyond the requested length.
-    out.state = capped || numbers.length > challenge.expected_count ? "truncated" : "complete";
-    const accepted = numbers.length >= challenge.expected_count
+    out.state = !job.strict && (capped || numbers.length > challenge.expected_count) ? "truncated" : "complete";
+    const accepted = !job.strict && numbers.length >= challenge.expected_count
       ? numbers.slice(0,challenge.expected_count).join(", ") : text;
     return {text:accepted,expected_count:challenge.expected_count};
   } catch(e) {
     out.state = job.controller.signal.aborted ? "cancelled" : "failed";
-    const message = String(e?.message || e);
+    const message = deadline?.signal.aborted && !job.controller.signal.aborted
+      ? "Request timed out ("+job.timeout+"s)." : String(e?.message || e);
     out.error = (job.controller.signal.aborted ? "Cancelled" :
       key ? message.replaceAll(key,"[REDACTED]") : message).slice(0,250);
     return {text:"",expected_count:challenge.expected_count};
-  } finally { job.completed++; }
+  } finally { clearTimeout(deadlineTimer); job.completed++; }
 }
 async function execute(j,bank,detector) {
   try {
-    const challenges = generateChallenges(3);
-    j.samples = challenges.map((c,i)=>({
-      index:i+1,state:"queued",count:0,expectedCount:c.expected_count,error:null
-    }));
-    const outputs = await Promise.all(challenges.map((c,i)=>sample(j,i,c)));
-    if (j.controller.signal.aborted) return;
-    if (!outputs.some(x=>x.text)) {
-      j.state = "failed";
-      j.error = "All challenges failed: " + (j.samples.find(s=>s.error)?.error || "no valid outputs");
-      return;
+    for (let round=1;round<=j.repeat && !j.controller.signal.aborted;round++) {
+      j.round=round;
+      const challenges=generateChallenges(j.count);
+      j.samples=challenges.map((c,i)=>({
+        index:i+1,state:"queued",count:0,expectedCount:c.expected_count,error:null
+      }));
+      const outputs=new Array(j.count);
+      let next=0;
+      const worker=async()=>{
+        while(next<challenges.length && !j.controller.signal.aborted) {
+          const index=next++;
+          outputs[index]=await sample(j,index,challenges[index]);
+        }
+      };
+      await Promise.all(Array.from({length:j.parallel},worker));
+      if(j.controller.signal.aborted)return;
+      let analysis=null,error=null;
+      if(!outputs.some(x=>x?.text)) {
+        error="All challenges failed: "+(j.samples.find(s=>s.error)?.error||"no valid outputs");
+      } else if(j.strict && j.samples.some(s=>s.state!=="complete")) {
+        error="Strict mode requires three complete, valid responses.";
+      } else {
+        const result=analyzeSharedOutputs(outputs,bank,detector,{allowPartial:!j.strict});
+        analysis={...result,results:(result.results||[]).slice(0,20)};
+      }
+      const report={round,samples:j.samples.map(s=>({...s})),analysis,error};
+      j.rounds.push(report);
+      j.analysis=analysis;
     }
-    const analysis = analyzeSharedOutputs(outputs,bank,detector,{allowPartial:true});
-    j.analysis = {...analysis,results:(analysis.results || []).slice(0,20)};
-    j.state = "done";
+    if(!j.controller.signal.aborted) {
+      j.state=j.rounds.some(r=>r.analysis)?"done":"failed";
+      if(j.state==="failed")
+        j.error=j.rounds.at(-1)?.error||"No rounds could be scored.";
+    }
   } catch(e) {
-    if (!j.controller.signal.aborted) {
-      j.state = "failed";
-      j.error = String(e?.message||e).slice(0,300);
+    if(!j.controller.signal.aborted) {
+      j.state="failed";
+      j.error=String(e?.message||e).slice(0,300);
     }
   } finally {
-    j.finishedAt = new Date().toISOString();
-    j.controller = null;
+    j.finishedAt=new Date().toISOString();
+    j.controller=null;
     prune();
   }
 }
-async function start(model,format="responses",stream=false) {
+async function start({model,format="responses",stream=false,effort,
+  timeout=DEFAULT_TIMEOUT,count=3,parallel=3,repeat=1,strict=false}) {
   if (typeof model !== "string" || model.length > 256 ||
       !/^[^\s\x00-\x1f]+\/[^\s\x00-\x1f]+$/.test(model))
     throw Error("Choose a valid provider/model.");
   if (model.startsWith("group/")) throw Error("Routing groups cannot be fingerprinted reliably.");
   if (!["responses","chat"].includes(format)) throw Error("Unsupported API protocol.");
   if (typeof stream!=="boolean") throw Error("Invalid streaming option.");
+  if (effort!==undefined && (typeof effort!=="string" || !/^[a-zA-Z0-9_.-]{1,64}$/.test(effort)))
+    throw Error("Invalid reasoning effort.");
+  if (typeof timeout!=="number" || !Number.isFinite(timeout) || timeout<0.1 || timeout>600)
+    throw Error("Timeout must be between 0.1 and 600 seconds.");
+  if (!Number.isInteger(count) || count<1 || count>3)
+    throw Error("Sample count must be 1–3.");
+  if (!Number.isInteger(parallel) || parallel<1 || parallel>3)
+    throw Error("Parallel requests must be 1–3.");
+  parallel=Math.min(parallel,count);
+  if (!Number.isInteger(repeat) || repeat<1 || repeat>MAX_REPEAT)
+    throw Error("Repeat must be between 1 and "+MAX_REPEAT+".");
+  if(typeof strict!=="boolean")throw Error("Invalid strict option.");
+  if(strict && count!==3)throw Error("Strict mode requires count=3.");
   if ([...jobs.values()].filter(x=>x.state==="running").length + starting >= MAX_RUNNING)
     throw Error("Two detections are already running.");
   starting++;
   try {
     if (!(await models()).includes(model)) throw Error("Model is not currently exposed by Gateway.");
     const {bank,detector} = await references();
-    const j = {id:randomUUID(),model,format,stream,state:"running",startedAt:new Date().toISOString(),
-      finishedAt:null,completed:0,samples:[],analysis:null,error:null,controller:new AbortController()};
+    const j = {id:randomUUID(),model,format,stream,effort,timeout,count,parallel,repeat,strict,
+      state:"running",startedAt:new Date().toISOString(),finishedAt:null,
+      completed:0,round:0,rounds:[],samples:[],analysis:null,error:null,controller:new AbortController()};
     jobs.set(j.id,j);
     prune();
     void execute(j,bank,detector);
@@ -324,10 +372,15 @@ function cancel(id) {
 export const Fingerprint = async () => ({tool:{
   models:{description:"List Magpie Gateway model IDs for fingerprinting.",
     args:schema({},[]),async execute(){return {models:await models()};}},
-  start:{description:"Start native LM Detector analysis (three model challenges).",
+  start:{description:"Start native LM Detector analysis with configurable samples and rounds.",
     args:schema({model:stringArg,format:{type:"string",enum:["responses","chat"]},
-      stream:{type:"boolean"}},["model"]),
-    async execute({model,format,stream}){return await start(model,format,stream);}},
+      stream:{type:"boolean"},effort:{type:"string",minLength:1,maxLength:64},
+      timeout:{type:"number",minimum:0.1,maximum:600},
+      count:{type:"integer",minimum:1,maximum:3},
+      parallel:{type:"integer",minimum:1,maximum:3},
+      repeat:{type:"integer",minimum:1,maximum:MAX_REPEAT},
+      strict:{type:"boolean"}},["model"]),
+    async execute(args){return await start(args);}},
   status:{description:"Check fingerprint job status and relative candidate rankings.",
     args:schema({jobId:stringArg},["jobId"]),
     async execute({jobId}){return publicJob(findJob(jobId));}},
