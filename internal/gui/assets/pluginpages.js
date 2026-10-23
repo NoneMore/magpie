@@ -270,7 +270,8 @@
         items.push({ name: titled(a), literal: true, icon: PUZZLE, sep: !items.length, run: () => act(key, a.id, context) });
       }
     }
-    return items;
+    const native = magpie.builtinActions?.(menu, context) || [];
+    return native.length ? [...native.map((item, i) => ({ ...item, sep: i === 0 })), ...items] : items;
   };
 
   async function act(key, id, context) {
