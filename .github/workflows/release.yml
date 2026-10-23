@@ -21,7 +21,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - name: Checkout fork revision
         uses: actions/checkout@v4
@@ -54,27 +54,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node.js
+        if: steps.meta.outputs.exists != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Set up Bun
         if: steps.meta.outputs.exists != 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
 
-      - name: Verify Windows compilation and fork regressions
+      - name: Full Windows gate before release
         if: steps.meta.outputs.exists != 'true'
         shell: pwsh
-        run: |
-          go vet ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -run '^$' ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          go test -count=1 ./internal/provider -run '^(TestCodexBodyCallerPromptOptIn|TestCodexCallerPromptSessionHeadersWithoutKey|TestCodexSignSessionHeaders|TestCodexPromptCacheKey)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/gui -run '^(TestCodexCallerPromptPreferenceAPI|TestSettingsSaveKeepsWhatItDoesNotSend|TestCoreScriptBudget)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/plugin/ -run '^(TestHostStartsPastAnOverlongStderrLine|TestDrainStderrKeepsTheChildGoing)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: ./.github/scripts/test-windows.ps1
 
       - name: Build Windows desktop and CLI (x64 / ARM64)
         if: steps.meta.outputs.exists != 'true'

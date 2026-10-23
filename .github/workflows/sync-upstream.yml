@@ -17,7 +17,7 @@ concurrency:
 jobs:
   sync:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - name: Checkout fork main
         uses: actions/checkout@v4
@@ -53,29 +53,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node.js
+        if: steps.merge.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Set up Bun
         if: steps.merge.outputs.changed == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
 
-      - name: Validate merged Windows code
+      - name: Full Windows gate before push
         if: steps.merge.outputs.changed == 'true'
         shell: pwsh
-        run: |
-          go vet ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -run '^$' ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go build -tags production -o "$env:RUNNER_TEMP\magpie.exe" .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          go test -count=1 ./internal/provider -run '^(TestCodexBodyCallerPromptOptIn|TestCodexCallerPromptSessionHeadersWithoutKey|TestCodexSignSessionHeaders|TestCodexPromptCacheKey)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/gui -run '^(TestCodexCallerPromptPreferenceAPI|TestSettingsSaveKeepsWhatItDoesNotSend|TestCoreScriptBudget)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/plugin/ -run '^(TestHostStartsPastAnOverlongStderrLine|TestDrainStderrKeepsTheChildGoing)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: ./.github/scripts/test-windows.ps1
 
       - name: Push tested merge
         if: steps.merge.outputs.changed == 'true'

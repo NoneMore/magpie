@@ -13,58 +13,24 @@ concurrency:
 permissions:
   contents: read
 
-# Personal Windows-only fork: no Linux/macOS matrix, Android CLI builds,
-# Linux GTK setup, or Unix-specific race suites.
+# Windows only: full Go tests plus targeted Chromium plugin UI tests.
 jobs:
   windows:
     name: Windows
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-
-      - name: Vet and compile
+      - name: Full Windows quality gate
         shell: pwsh
-        run: |
-          go vet ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -run '^$' ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go build -o "$env:RUNNER_TEMP\magpie.exe" .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Codex caller-prompt and settings regression
-        shell: pwsh
-        run: |
-          go test -count=1 ./internal/provider -run '^(TestCodexBodyCallerPromptOptIn|TestCodexCallerPromptSessionHeadersWithoutKey|TestCodexSignSessionHeaders|TestCodexPromptCacheKey)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/gui -run '^(TestCodexCallerPromptPreferenceAPI|TestSettingsSaveKeepsWhatItDoesNotSend|TestCoreScriptBudget)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Windows native smoke tests
-        shell: pwsh
-        run: |
-          go test -count=1 -timeout 2m ./internal/library -run '^(TestNetHealth|TestCheckHTTP)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/usage -run '^(TestWindows|TestLogChange|TestLogFileInfoPreservesIdentity$|TestUsageSameSizeAndMtimeRewrite$|TestLogGrowingRewriteThenAppend$|TestUsagePageCacheAfterUncachedQuery$)'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 -timeout 2m ./internal/update -run '^(TestInstallBinary|TestMoveAside|TestTrialStart)'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/sessions -run '^Test(WindowsSession|Move|CopyAll|CodexArchived|CodexSameTick|CodexPlainTwin)'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/agent -run '^(TestDsh|TestKeepDsh|TestVSCodeDetected)'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Plugin stderr tests
-        shell: pwsh
-        run: |
-          bun --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./internal/plugin/ -run '^(TestHostStartsPastAnOverlongStderrLine|TestDrainStderrKeepsTheChildGoing)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: ./.github/scripts/test-windows.ps1
