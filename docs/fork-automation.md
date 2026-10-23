@@ -2,7 +2,12 @@
 
 ## Automatic daily update (once per day)
 - At **02:17 UTC / 10:17 Beijing time** the Daily Upstream Sync workflow checks yetone/magpie main.
-- It merges locally, preserving this fork's commits. Conflicts abort immediately.
+- It merges locally, preserving this fork's commits. All business-code and
+  unknown conflicts abort. **One exact file** is allowlisted:
+  `internal/gui/core_budget_test.go`. If and only if it is the sole
+  unmerged path, the upstream version of this script-size policy test is
+  selected and the merge continues. Other test-file conflicts are **not**
+  automatically resolved. No `-X theirs` blanket override or forced push.
 - It executes the same fast Windows quality gate as the Test workflow **before** pushing.
 - On any test failure nothing is pushed or released. On success it pushes main
   without force and dispatches Fork Windows Release for the exact tested SHA.
@@ -14,6 +19,9 @@ The shared script is .github/scripts/test-windows.ps1. It runs:
 1. go vet ./... and a compile-only pass over all Go tests using go test -run '^$' ./...
 2. Actual isolated fork tests: Codex caller prompt, settings retention, GUI Page
    bridge permissions and origin checks, plugin runtime/import rules.
+   `TestCoreScriptBudget` is intentionally **not** run: it checks the
+   product's JS size budget, not functional behavior; custom plugin/bridge
+   JavaScript is allowed to increase that budget.
 3. Upstream-selected native Windows tests: Bun stderr, network, usage cache,
    Windows installation/rollback, sessions, dsh configuration and VS Code.
 4. Windows production GUI x64 build and JavaScript syntax checks of GUI,

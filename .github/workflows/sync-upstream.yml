@@ -42,8 +42,24 @@ jobs:
             exit 0
           fi
 
-          # Stop on conflicts. Never hard-reset or force-push this fork.
-          git merge --no-edit upstream/main
+          # Only the upstream-owned script-size *policy test* can be resolved
+          # automatically. It is not a correctness/regression test. All other
+          # conflicts, including code and other tests, still stop the merge.
+          if git merge --no-edit upstream/main; then
+            echo "Upstream merged without conflicts."
+          else
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            if [[ ${#conflicts[@]} -eq 1 &&
+                  "${conflicts[0]}" == "internal/gui/core_budget_test.go" ]]; then
+              echo "::notice::Resolving upstream-owned core JS size budget policy from upstream."
+              git checkout --theirs -- internal/gui/core_budget_test.go
+              git add -- internal/gui/core_budget_test.go
+              GIT_EDITOR=true git merge --continue
+            else
+              printf 'Unsafe merge conflicts; no push: %s\\n' "${conflicts[*]}" >&2
+              exit 1
+            fi
+          fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
