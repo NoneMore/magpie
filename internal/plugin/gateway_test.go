@@ -514,9 +514,9 @@ func TestPreparedHookAppliesAfterProviderAdapter(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","instructions":"Codex instructions","tool_choice":"auto","input":[{"role":"developer","content":"Own instructions"},{"role":"user","content":"hello"}]}`)
 	out := GatewayPrepared(t.Context(), body, PreparedContext{Provider: "codex", Protocol: "responses", Model: "gpt-5.5"})
 	var got struct {
-		Instructions string `json:"instructions"`
-		ToolChoice string `json:"tool_choice"`
-		Input []json.RawMessage `json:"input"`
+		Instructions string            `json:"instructions"`
+		ToolChoice   string            `json:"tool_choice"`
+		Input        []json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatal(err)
