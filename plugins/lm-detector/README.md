@@ -27,7 +27,7 @@ Non-loopback gateways require HTTPS and an explicit key. No upstream provider ke
 
 - One run makes three independent challenges (292–332 integers each), sends up to three requests concurrently and calls the real upstream `analyzeSharedOutputs` scorer, with partial-sample support. Routing groups are excluded because they can sample different models; configure model fallbacks carefully.
 - The non-streaming adapter requires a completed response and caps excess integers to the requested challenge length, matching upstream relaxed-mode scoring.
-- The reference bank + detector are loaded together and checked for matching metadata; a mismatch fails safely. The data package version is currently being verified against the vendored scorer before pinning.
+- The reference bank + detector are loaded together and checked for matching metadata; a mismatch fails safely. The npm `lmfpd` reference-data package is pinned to `0.0.1792416845676`, which passed the shared detector compatibility tests; a lockfile is still recommended for fully reproducible transitive dependencies.
 - A run can be cancelled. Jobs and final reports are in-memory only and are lost when the plugin host restarts. At most two run concurrently.
 - The current adapter reads **non-streaming** Responses or Chat Completions JSON. Models/Gateway routes that only support SSE need a streaming adapter in a follow-up. Tokenizer probing is not implemented.
 - The `magpie.tool.run` bridge is a capability exposed by this fork, not by upstream Magpie. Existing plugin tools are also visible to the agent-facing plugin tools MCP server.
