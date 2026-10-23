@@ -130,7 +130,7 @@ func TestLMDetectorGatewayBunIntegration(t *testing.T) {
 	if err := provider.Save(provider.Provider{
 		ID: "fpdci", Name: "LM Detector test", Key: "upstream-test-key",
 		Models: []string{"chat-fixture", "responses-fixture"},
-		Chat: upstream.URL + "/v1", Responses: upstream.URL + "/v1",
+		Chat:   upstream.URL + "/v1", Responses: upstream.URL + "/v1",
 	}); err != nil {
 		t.Fatal(err)
 	}

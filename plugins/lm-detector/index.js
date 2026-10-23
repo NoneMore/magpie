@@ -64,7 +64,7 @@ async function models() {
     headers:{Authorization:"Bearer " + key}, redirect:"error", signal:AbortSignal.timeout(10000)
   });
   if (!response.ok) throw Error("Cannot list Gateway models (HTTP " + response.status + ").");
-  const payload = await response.json();
+  const payload = await boundedJson(response);
   if (!Array.isArray(payload?.data)) throw Error("Unexpected Gateway model list.");
   const valid = s => typeof s === "string" && s.length <= 256 &&
     /^[^\s\x00-\x1f]+\/[^\s\x00-\x1f]+$/.test(s);
@@ -244,6 +244,10 @@ async function sample(job,index,challenge) {
     const body = job.format === "chat"
       ? {model:job.model,messages:[{role:"user",content:challenge.prompt}],stream:job.stream}
       : {model:job.model,input:[{role:"user",content:challenge.prompt}],stream:job.stream,store:false};
+    // Like upstream CLI, ask Chat SSE for provider usage when available.
+    // The relaxed integer cap may still stop before the usage event.
+    if (job.format === "chat" && job.stream)
+      body.stream_options={include_usage:true};
     if (job.effort) {
       if (job.format === "chat") body.reasoning_effort = job.effort;
       else body.reasoning = {effort:job.effort};
@@ -256,7 +260,8 @@ async function sample(job,index,challenge) {
     const response = await fetch(base + path, {
       method:"POST",headers:{"Content-Type":"application/json",
         Accept:job.stream?"text/event-stream":"application/json",Authorization:"Bearer " + key},
-      body:JSON.stringify(body),signal,redirect:"error"
+      body:JSON.stringify(body),signal,redirect:"error",
+      timeout:false // Bun's idle timeout must not end SSE after the first body byte.
     });
     if (!response.ok) {
       let reason = "";

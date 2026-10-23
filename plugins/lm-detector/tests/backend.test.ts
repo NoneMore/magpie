@@ -249,6 +249,36 @@ test("SSE metadata without visible text never fabricates TTFT/TPS",async()=>{
   } finally {globalThis.fetch=originalFetch;}
 });
 
+
+test("models response is size-bounded",async()=>{
+  globalThis.fetch=async url=>{
+    if(!String(url).endsWith("/models"))throw Error("Unexpected route");
+    return new Response(JSON.stringify({data:["alpha/model"],padding:"x".repeat(1024*1024)}),{
+      headers:{"content-type":"application/json"}
+    });
+  };
+  try{await expect(tools.models.execute({})).rejects.toThrow("Gateway response is too large");}
+  finally{globalThis.fetch=originalFetch;}
+});
+
+test("Chat SSE requests usage and disable Bun socket idle timeout",async()=>{
+  fakeGateway(async(url,init)=>{
+    const body=JSON.parse(init.body);
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({include_usage:true});
+    expect(init.timeout).toBe(false);
+    return chunkedSSE([eventData({choices:[{index:0,delta:{
+      content:Array(400).fill(1).join(", ")+", "
+    }}]})]);
+  });
+  try{
+    const job=await tools.start.execute({model:fixtureModel,format:"chat",stream:true,count:1});
+    const done=await settled(job.jobId);
+    expect(done.state).toBe("done");
+    expect(done.samples[0].state).toBe("truncated");
+  }finally{globalThis.fetch=originalFetch;}
+});
+
 test("streaming Chat accumulates split SSE deltas and verifies terminal finish",async()=>{
   const parts=Array(280).fill(1).join(", "),seen=[];
   fakeGateway(async(url,init)=>{
