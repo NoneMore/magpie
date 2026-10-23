@@ -134,7 +134,7 @@ func preparedCodexHook(ctx context.Context, p provider.Provider, to provider.Pro
 	origin, _ := ctx.Value(codexPreparedKey{}).(codexPreparedOrigin)
 	out := plugin.GatewayPrepared(ctx, body, plugin.PreparedContext{
 		Provider: p.ID, Protocol: string(to),
-		Model: gjson.GetBytes(body, "model").String(),
+		Model:             gjson.GetBytes(body, "model").String(),
 		InjectedDeveloper: origin.injected,
 	})
 	if bytes.Equal(out, body) {

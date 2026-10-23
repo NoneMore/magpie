@@ -234,7 +234,6 @@ func (r *GatewayRun) Close() {
 	_ = r.h.call(ctx, "gatewayRequest", map[string]any{"operation": "close", "id": r.id, "token": r.token}, nil)
 }
 
-
 // PreparedContext identifies an already-adapted Codex request. It intentionally
 // contains no authorization headers, access tokens, or client credentials.
 type PreparedContext struct {

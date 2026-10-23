@@ -16,10 +16,10 @@ func preparedSample(t *testing.T) ([]byte, codexPreparedOrigin) {
 	sample := map[string]any{
 		"model": "gpt-5.5", "instructions": "You are Codex.",
 		"prompt_cache_key": "the-thread",
-		"stream": true, "store": false,
+		"stream":           true, "store": false,
 		"tool_choice": "auto",
-		"tools": []any{map[string]any{"type": "function", "name": "read"}},
-		"input": []any{added, map[string]any{"type": "message", "role": "user", "content": "hi"}},
+		"tools":       []any{map[string]any{"type": "function", "name": "read"}},
+		"input":       []any{added, map[string]any{"type": "message", "role": "user", "content": "hi"}},
 	}
 	body, err := json.Marshal(sample)
 	if err != nil {
