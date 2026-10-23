@@ -350,7 +350,7 @@ test("strict mode does not score a round with failed samples",async()=>{
     expect(done.state).toBe("failed");
     expect(done.rounds).toHaveLength(1);
     expect(done.rounds[0].analysis).toBeNull();
-    expect(done.rounds[0].error).toContain("Strict mode");
+    expect(done.rounds[0].error).toContain("All challenges failed");
     expect(done.samples.every(s=>s.state==="failed")).toBe(true);
   } finally {globalThis.fetch=originalFetch;}
 });
