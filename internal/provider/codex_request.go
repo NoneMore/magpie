@@ -244,11 +244,10 @@ func codexInstructions(model string) string {
 	return codexcat.Prompt
 }
 
-// codexBody makes a Responses request the one Codex CLI would send: it
-// streams only, keeps nothing (so its items carry no ids), carries Codex's
-// instructions — the client's own riding first in the input — and rejects
-// the sampling knobs, explicit cache options and any service tier but
-// Fast's and Ultrafast's.
+// codexBody makes a Responses request for the built-in Codex account. By
+// default it keeps the native Codex instructions and puts the caller's
+// instructions first in input. This personal fork can opt into caller-owned
+// instructions without changing its other Codex request adaptations.
 func codexBody(body []byte) []byte {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -277,17 +276,29 @@ func codexBody(body []byte) []byte {
 	input, _ := m["input"].([]any)
 	input = codexInput(input)
 	own, _ := m["instructions"].(string)
+	// Explicit personal-fork opt-in; empty caller instructions still use
+	// Codex's native prompt. No plugin or extra request-body pass is needed.
+	callerPrompt := os.Getenv("MAGPIE_CODEX_CALLER_PROMPT") == "1" && strings.TrimSpace(own) != ""
 	if k, _ := m["prompt_cache_key"].(string); k == "" {
 		if k = conversationKey(own, input); k != "" {
 			m["prompt_cache_key"] = k
 		}
 	}
+	// The two prompt policies must not share Codex's session headers/cache,
+	// including when the client supplies its own prompt_cache_key.
+	if callerPrompt {
+		if key, _ := m["prompt_cache_key"].(string); key != "" {
+			hash := sha256.Sum256([]byte("codex-caller-prompt\x00" + key))
+			id := hex.EncodeToString(hash[:])
+			m["prompt_cache_key"] = id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
+		}
+	}
 
-	// the client's instructions go first as a developer message, Codex's
-	// in their place — unless they are Codex's, from Codex itself
+	// Keep independent developer messages unchanged. Only the original
+	// top-level caller instructions can replace Codex's native prompt.
 	codex := codexInstructions(model)
 	if strings.TrimSpace(own) != "" {
-		if firstLine(own) == firstLine(codex) {
+		if callerPrompt || firstLine(own) == firstLine(codex) {
 			codex = own
 		} else {
 			input = append([]any{map[string]any{"type": "message", "role": "developer",
