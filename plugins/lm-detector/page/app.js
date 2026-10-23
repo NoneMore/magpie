@@ -11,9 +11,13 @@
   function providers() {return [...new Set(models.map(m=>m.split("/")[0]))].sort();}
   function setProviders() {
     const old=$("provider").value, ids=providers();
-    $("provider").replaceChildren(...ids.map(id=>opt(providerNames.get(id)||id,id)));
-    $("provider").value=ids.includes(chosenProvider)?chosenProvider:ids.includes(old)?old:(ids[0]||"");
+    const missing=!!chosenProvider&&!ids.includes(chosenProvider);
+    $("provider").replaceChildren(...ids.map(id=>opt(providerNames.get(id)||id,id)),
+      ...(missing?[opt(providerNames.get(chosenProvider)||chosenProvider,chosenProvider)]:[]));
+    $("provider").value=missing?chosenProvider:ids.includes(chosenProvider)?chosenProvider:ids.includes(old)?old:(ids[0]||"");
     setModels();
+    if(missing)say("所选 Provider 当前没有可检测的 Gateway 模型","error");
+    return !missing;
   }
   function setModels() {
     const p=$("provider").value, old=$("model").value;
@@ -36,8 +40,8 @@
       models=Array.isArray(m?.models)?m.models:[];
       const list=Array.isArray(p)?p:(Array.isArray(p?.providers)?p.providers:[]);
       providerNames=new Map(list.filter(x=>x?.id).map(x=>[x.id,x.name||x.id]));
-      setProviders();
-      say(models.length?"已加载 "+models.length+" 个模型":"Gateway 暂无可用模型",models.length?"ok":"error");
+      if(setProviders())
+        say(models.length?"已加载 "+models.length+" 个模型":"Gateway 暂无可用模型",models.length?"ok":"error");
     }catch(e){say("读取失败："+e.message,"error");}
   }
   function stop(){clearTimeout(timer);clearInterval(clock);timer=null;clock=null;}
@@ -98,7 +102,7 @@
   });
   magpie.ready.then(async()=>{
     active=true;
-    $("provider").addEventListener("change",setModels);
+    $("provider").addEventListener("change",()=>{chosenProvider="";setModels();});
     $("run").addEventListener("click",run);
     $("cancel").addEventListener("click",cancel);
     $("reload").addEventListener("click",load);

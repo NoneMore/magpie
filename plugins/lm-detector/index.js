@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const jobs = new Map();
 const MAX_RUNNING = 2, MAX_HISTORY = 40, MAX_AGE = 24 * 60 * 60 * 1000;
 const DEFAULT_GATEWAY = "http://127.0.0.1:3425/v1";
+const MAX_RESPONSE_BYTES = 1024 * 1024;
 const stringArg = {type:"string",minLength:1};
 const schema = (properties,required) => ({type:"object",properties,required,additionalProperties:false});
 let starting = 0, referencePromise;
@@ -30,6 +31,29 @@ function gateway() {
   return {base,key};
 }
 
+async function boundedJson(response) {
+  if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES)
+    throw Error("Gateway response is too large.");
+  if (!response.body) throw Error("Gateway returned an empty body.");
+  const reader = response.body.getReader();
+  const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const {done,value} = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) throw Error("Gateway response is too large.");
+      chunks.push(value);
+    }
+  } finally {
+    if (size > MAX_RESPONSE_BYTES) await reader.cancel().catch(()=>{});
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.length; }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 async function models() {
   const {base,key} = gateway();
   const response = await fetch(base + "/models", {
@@ -40,7 +64,7 @@ async function models() {
   if (!Array.isArray(payload?.data)) throw Error("Unexpected Gateway model list.");
   const valid = s => typeof s === "string" && s.length <= 256 &&
     /^[^\s\x00-\x1f]+\/[^\s\x00-\x1f]+$/.test(s);
-  return [...new Set(payload.data.map(row => row?.id).filter(valid))].slice(0,2000).sort();
+  return [...new Set(payload.data.map(row => row?.id).filter(id => valid(id) && !id.startsWith("group/")))].slice(0,2000).sort();
 }
 
 async function references() {
@@ -85,13 +109,16 @@ function prune() {
 }
 function pickText(payload,format) {
   if (format === "chat") {
-    const m = payload?.choices?.[0]?.message;
-    if (m?.refusal) throw Error("Model refused the fingerprint challenge.");
+    const choice = payload?.choices?.[0], m = choice?.message;
+    if (m?.refusal || ["refusal","content_filter"].includes(choice?.finish_reason))
+      throw Error("Model refused the fingerprint challenge.");
+    if (!["stop","end_turn","completed"].includes(choice?.finish_reason))
+      throw Error("Chat completion did not finish normally.");
     const c = m?.content;
     return typeof c === "string" ? c : Array.isArray(c) ?
       c.map(x=>typeof x?.text==="string"?x.text:"").join("") : "";
   }
-  if (payload?.status === "failed" || payload?.status === "incomplete")
+  if (payload?.status !== "completed")
     throw Error("Responses request did not complete.");
   return (Array.isArray(payload?.output)?payload.output:[])
     .filter(x=>x?.type==="message")
@@ -102,8 +129,11 @@ function pickText(payload,format) {
 async function sample(job,index,challenge) {
   const out = job.samples[index];
   out.state = "waiting";
+  let key = "";
   try {
-    const {base,key} = gateway();
+    const config = gateway();
+    const {base} = config;
+    key = config.key;
     const body = job.format === "chat"
       ? {model:job.model,messages:[{role:"user",content:challenge.prompt}],stream:false}
       : {model:job.model,input:[{role:"user",content:challenge.prompt}],stream:false,store:false};
@@ -115,24 +145,27 @@ async function sample(job,index,challenge) {
     });
     if (!response.ok) {
       let reason = "";
-      try { const x = await response.json();reason=String(x?.error?.message||"").slice(0,220); } catch {}
+      try { const x = await boundedJson(response);reason=String(x?.error?.message||"").slice(0,220); } catch {}
       throw Error("HTTP " + response.status + (reason ? ": " + reason : ""));
     }
-    const payload = await response.json();
+    const payload = await boundedJson(response);
     if (payload?.error) throw Error("Gateway rejected the challenge.");
     const text = pickText(payload,job.format);
     if (text.length > 262144) throw Error("Unexpectedly large model response.");
     const numbers = parseNumbers(text);
-    out.count = numbers.length;
+    out.count = Math.min(numbers.length,challenge.expected_count);
     if (numbers.length < Math.max(80,Math.ceil(challenge.expected_count*.55)))
       throw Error("Too few valid integers (" + numbers.length + "/" + challenge.expected_count + ").");
-    out.state = "complete";
-    return {text,expected_count:challenge.expected_count};
+    // Match upstream relaxed-mode scoring: ignore integers beyond the requested length.
+    out.state = numbers.length > challenge.expected_count ? "truncated" : "complete";
+    const accepted = numbers.length >= challenge.expected_count
+      ? numbers.slice(0,challenge.expected_count).join(", ") : text;
+    return {text:accepted,expected_count:challenge.expected_count};
   } catch(e) {
     out.state = job.controller.signal.aborted ? "cancelled" : "failed";
-    const {key} = gateway();
+    const message = String(e?.message || e);
     out.error = (job.controller.signal.aborted ? "Cancelled" :
-      String(e?.message || e).replaceAll(key,"[REDACTED]")).slice(0,250);
+      key ? message.replaceAll(key,"[REDACTED]") : message).slice(0,250);
     return {text:"",expected_count:challenge.expected_count};
   } finally { job.completed++; }
 }
@@ -167,6 +200,7 @@ async function start(model,format="responses") {
   if (typeof model !== "string" || model.length > 256 ||
       !/^[^\s\x00-\x1f]+\/[^\s\x00-\x1f]+$/.test(model))
     throw Error("Choose a valid provider/model.");
+  if (model.startsWith("group/")) throw Error("Routing groups cannot be fingerprinted reliably.");
   if (!["responses","chat"].includes(format)) throw Error("Unsupported API protocol.");
   if ([...jobs.values()].filter(x=>x.state==="running").length + starting >= MAX_RUNNING)
     throw Error("Two detections are already running.");
