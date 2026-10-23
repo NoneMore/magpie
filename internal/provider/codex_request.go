@@ -111,14 +111,12 @@ func callerSessionHeaders(h http.Header, body []byte) {
 		// native one, and must retain the native session identity.
 		return
 	}
-	key := h.Get("session-id")
-	if key == "" {
-		key = h.Get("thread-id")
-	}
-	if key != "" {
-		id := callerCacheKey(key)
-		h.Set("session-id", id)
-		h.Set("thread-id", id)
+	// Preserve distinct session and thread identities for callers that
+	// supplied both; unlike body keys, their two headers need not agree.
+	for _, name := range []string{"session-id", "thread-id"} {
+		if key := h.Get(name); key != "" {
+			h.Set(name, callerCacheKey(key))
+		}
 	}
 }
 
