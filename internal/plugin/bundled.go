@@ -26,6 +26,15 @@ var lmDetectorFiles embed.FS
 // EnsureBundledLMDetector is the fork's startup hook, called by CLI after
 // settings migration. It does not register a Go plugin or fork the Bun host.
 func EnsureBundledLMDetector() error {
+    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
+    // Carry forward the legacy marker, including a previous explicit uninstall.
+    if _, err := os.Stat(filepath.Join(root, ".registered")); err == nil {
+        if err := markBundled(marker); err != nil { return err }
+    } else if !errors.Is(err, os.ErrNotExist) { return err }
+    needed, err := bundledLMDetectorNeeded(root, marker)
+    if err != nil || !needed { return err }
+
     for _, name := range []string{"data/unified_bank.json", "data/shared_detector.bin"} {
         b, err := lmDetectorFiles.ReadFile("bundled-lm-detector/runtime/" + name)
         if err != nil || len(b) < 1<<20 {
@@ -34,15 +43,27 @@ func EnsureBundledLMDetector() error {
     }
     payload, err := fs.Sub(lmDetectorFiles, "bundled-lm-detector/runtime")
     if err != nil { return err }
-    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
-    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
-    // Carry forward the old marker, including a previous explicit uninstall.
-    if _, err := os.Stat(filepath.Join(root, ".registered")); err == nil {
-        if err := markBundled(marker); err != nil { return err }
-    } else if !errors.Is(err, os.ErrNotExist) { return err }
     target, err := materializeLMDetector(payload, root)
     if err != nil { return err }
     return EnsureBundled(target, "magpie-lm-detector", marker)
+}
+
+// A persistent registration marker with no matching entry means the user
+// uninstalled the bundle. Do not extract or even inspect its embedded assets
+// on subsequent launches. A still-listed bundle must continue to migrate,
+// including when the previous version's extraction has been deleted.
+func bundledLMDetectorNeeded(root, marker string) (bool, error) {
+    if _, err := os.Stat(marker); errors.Is(err, os.ErrNotExist) {
+        return true, nil
+    } else if err != nil {
+        return false, err
+    }
+    for _, e := range Load().Plugins {
+        if bundledPackage(e, "magpie-lm-detector") || oldBundledSpec(e.Spec, root, "lm-detector") {
+            return true, nil
+        }
+    }
+    return false, nil
 }
 
 // Immutable, content-addressed copies keep old Bun hosts running safely during
@@ -154,7 +175,7 @@ func EnsureBundled(spec, packageName, marker string) error {
     l := Load()
     found := -1
     for i, e := range l.Plugins {
-        if e.Spec == spec || bundledPackage(e, packageName) || oldBundledSpec(e.Spec, spec) {
+        if e.Spec == spec || bundledPackage(e, packageName) || oldBundledSpec(e.Spec, filepath.Dir(filepath.Dir(spec)), filepath.Base(spec)) {
             found = i
             break
         }
@@ -194,12 +215,12 @@ func bundledPackage(e Entry, name string) bool {
 
 // Match a prior content-addressed extraction even if its package.json was
 // deleted with the cache. Do not treat arbitrary user plugin paths as ours.
-func oldBundledSpec(old, current string) bool {
-    if !filepath.IsAbs(old) || filepath.Base(old) != filepath.Base(current) { return false }
-    rel, err := filepath.Rel(filepath.Dir(filepath.Dir(current)), old)
+func oldBundledSpec(old, root, name string) bool {
+    if !filepath.IsAbs(old) || filepath.Base(old) != name { return false }
+    rel, err := filepath.Rel(root, old)
     if err != nil { return false }
     parts := strings.Split(filepath.ToSlash(rel), "/")
-    if len(parts) != 2 || len(parts[0]) != 20 || parts[1] != filepath.Base(current) { return false }
+    if len(parts) != 2 || len(parts[0]) != 20 || parts[1] != name { return false }
     _, err = hex.DecodeString(parts[0])
     return err == nil
 }
