@@ -2,6 +2,7 @@ package plugin
 
 import (
     "context"
+    "errors"
     "os"
     "path/filepath"
     "testing"
@@ -138,4 +139,54 @@ func TestPreparedBundleBootstrap(t *testing.T) {
     if filepath.Base(l.Plugins[0].Spec) != "lm-detector" { t.Fatalf("unstable plugin spec: %+v", l.Plugins[0]) }
     w, _ := Window(Target(l.Plugins[0].Spec))
     if w == nil || w.Page == nil || len(w.Actions) != 1 { t.Fatalf("missing Page/Provider action in bundled plugin: %+v", w) }
+}
+
+func TestBundledRemovedSkipsExtraction(t *testing.T) {
+    for _, otherPlugin := range []bool{false, true} {
+        name := "empty-list"
+        if otherPlugin { name = "other-plugin-present" }
+        t.Run(name, func(t *testing.T) {
+            storeSandbox(t)
+            root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+            marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
+            if err := markBundled(marker); err != nil { t.Fatal(err) }
+            if otherPlugin {
+                if err := save(List{Plugins: []Entry{{Spec: "unrelated-plugin@latest"}}}); err != nil { t.Fatal(err) }
+            }
+            // Works even in an unprepared source checkout; a removed plugin
+            // must not check the embedded data bank or create an extraction.
+            if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
+            if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+                t.Fatalf("removed plugin extracted into %s: %v", root, err)
+            }
+        })
+    }
+}
+
+func TestBundledLegacyRemovalSkipsExtraction(t *testing.T) {
+    storeSandbox(t)
+    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    if err := os.MkdirAll(root, 0o700); err != nil { t.Fatal(err) }
+    if err := os.WriteFile(filepath.Join(root, ".registered"), []byte("registered\n"), 0o600); err != nil { t.Fatal(err) }
+    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
+    entries, err := os.ReadDir(root)
+    if err != nil { t.Fatal(err) }
+    if len(entries) != 1 || entries[0].Name() != ".registered" {
+        t.Fatalf("legacy removal left new extraction entries: %+v", entries)
+    }
+    if _, err := os.Stat(filepath.Join(settings.Dir(), "bundled-lm-detector.registered")); err != nil {
+        t.Fatalf("legacy marker was not migrated: %v", err)
+    }
+}
+
+func TestBundledRemovedCheckAllowsExistingVersionMigration(t *testing.T) {
+    storeSandbox(t)
+    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
+    if err := markBundled(marker); err != nil { t.Fatal(err) }
+    // Simulate an installed old version whose extraction disappeared.
+    old := filepath.Join(root, "aaaaaaaaaaaaaaaaaaaa", "lm-detector")
+    if err := save(List{Plugins: []Entry{{Spec: old, Off: true}}}); err != nil { t.Fatal(err) }
+    needed, err := bundledLMDetectorNeeded(root, marker)
+    if err != nil || !needed { t.Fatalf("lost upgrade eligibility for missing old extraction: %v, needed=%v", err, needed) }
 }
