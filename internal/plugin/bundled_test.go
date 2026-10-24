@@ -23,7 +23,7 @@ func fixtureBundled(t *testing.T, parent, version string) string {
 func TestBundledFirstRunUpgradeOffAndExplicitRemoval(t *testing.T) {
     storeSandbox(t)
     base := filepath.Join(settings.Dir(), "bundled", "lm-detector")
-    marker := filepath.Join(base, ".registered")
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
     a := fixtureBundled(t, base, "v1")
     b := fixtureBundled(t, base, "v2")
     if err := EnsureBundled(a, "magpie-lm-detector", marker); err != nil { t.Fatal(err) }
@@ -32,6 +32,7 @@ func TestBundledFirstRunUpgradeOffAndExplicitRemoval(t *testing.T) {
     if err := EnsureBundled(b, "magpie-lm-detector", marker); err != nil { t.Fatal(err) }
     if got := Load().Plugins; len(got) != 1 || got[0].Spec != b || !got[0].Off { t.Fatalf("upgrade lost off choice: %+v", got) }
     if err := Remove(context.Background(), b); err != nil { t.Fatal(err) }
+    if err := os.RemoveAll(base); err != nil { t.Fatal(err) } // removing generated cache must not erase uninstall intent
     if err := EnsureBundled(b, "magpie-lm-detector", marker); err != nil { t.Fatal(err) }
     if got := Load().Plugins; len(got) != 0 { t.Fatalf("resurrected removed plugin: %+v", got) }
 }
@@ -41,7 +42,7 @@ func TestBundledMigratesManualCopyWithoutLosingOptions(t *testing.T) {
     manual := fixtureBundled(t, t.TempDir(), "manual")
     base := filepath.Join(settings.Dir(), "bundled", "lm-detector")
     fresh := fixtureBundled(t, base, "version")
-    marker := filepath.Join(base, ".registered")
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
     l := List{Plugins: []Entry{{Spec: manual, Off: true, Options: map[string]any{"custom": true}}},
         Prefer: map[string]string{"provider": manual}}
     if err := save(l); err != nil { t.Fatal(err) }
@@ -58,7 +59,7 @@ func TestBundledFailsClosedOnInvalidPluginList(t *testing.T) {
     base := filepath.Join(settings.Dir(), "bundled", "lm-detector")
     pluginPath := fixtureBundled(t, base, "v1")
     writeList(t, "{bad json")
-    if err := EnsureBundled(pluginPath, "magpie-lm-detector", filepath.Join(base, ".registered")); err == nil {
+    if err := EnsureBundled(pluginPath, "magpie-lm-detector", filepath.Join(settings.Dir(), "bundled-lm-detector.registered")); err == nil {
         t.Fatal("invalid config should not be overwritten")
     }
     b, err := os.ReadFile(listPath())
@@ -78,11 +79,51 @@ func TestMaterializeBundledCopyKeepsStableName(t *testing.T) {
     if err != nil || a != b { t.Fatalf("not idempotent: %s %s %v", a,b,err) }
     if filepath.Base(a) != "lm-detector" { t.Fatalf("unstable plugin short name: %s", a) }
     if _, err := os.Stat(filepath.Join(a, ".complete")); err != nil { t.Fatal(err) }
+    // A complete marker does not justify reusing deleted or modified files.
+    if err := os.WriteFile(filepath.Join(a, "index.js"), []byte("damaged"), 0o600); err != nil { t.Fatal(err) }
+    repaired, err := materializeLMDetector(files, root)
+    if err != nil || repaired != a { t.Fatalf("did not repair damaged bundle: %s / %v", repaired, err) }
+    original, err := os.ReadFile(filepath.Join(a, "index.js"))
+    if err != nil || string(original) != "export const Fingerprint = () => ({})" { t.Fatalf("bad repair: %q / %v", original, err) }
+    if err := os.Remove(filepath.Join(a, "page", "index.html")); err != nil { t.Fatal(err) }
+    if _, err := materializeLMDetector(files, root); err != nil { t.Fatalf("did not restore missing bundle file: %v", err) }
     files["index.js"] = &fstest.MapFile{Data: []byte("changed")}
     next, err := materializeLMDetector(files, root)
     if err != nil || next == a { t.Fatalf("changed bundle must get a new directory: %s / %v", next,err) }
     old, err := fs.ReadFile(os.DirFS(a), "index.js")
     if err != nil || string(old) != "export const Fingerprint = () => ({})" { t.Fatalf("old bundle mutated: %q / %v", old,err) }
+}
+
+func TestBundledMissingPreviousExtractionMigrates(t *testing.T) {
+    storeSandbox(t)
+    base := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
+    old := fixtureBundled(t, filepath.Join(base, "aaaaaaaaaaaaaaaaaaaa"), "lm-detector")
+    next := fixtureBundled(t, filepath.Join(base, "bbbbbbbbbbbbbbbbbbbb"), "lm-detector")
+    if err := EnsureBundled(old, "magpie-lm-detector", marker); err != nil { t.Fatal(err) }
+    if err := SetOff(old, true); err != nil { t.Fatal(err) }
+    if err := os.RemoveAll(old); err != nil { t.Fatal(err) }
+    if err := EnsureBundled(next, "magpie-lm-detector", marker); err != nil { t.Fatal(err) }
+    got := Load().Plugins
+    if len(got) != 1 || got[0].Spec != next || !got[0].Off {
+        t.Fatalf("stale path created duplicate or lost off choice: %+v", got)
+    }
+}
+
+func TestPreparedBundlePreservesLegacyRemoval(t *testing.T) {
+    if _, err := lmDetectorFiles.ReadFile("bundled-lm-detector/runtime/data/unified_bank.json"); err != nil {
+        if os.Getenv("LM_DETECTOR_REQUIRED") == "1" { t.Fatal(err) }
+        t.Skip("reference assets are not prepared")
+    }
+    storeSandbox(t)
+    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    if err := os.MkdirAll(root, 0o700); err != nil { t.Fatal(err) }
+    if err := os.WriteFile(filepath.Join(root, ".registered"), []byte("registered\n"), 0o600); err != nil { t.Fatal(err) }
+    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
+    if err := os.RemoveAll(root); err != nil { t.Fatal(err) }
+    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
+    if got := Load().Plugins; len(got) != 0 { t.Fatalf("resurrected previously removed plugin: %+v", got) }
+    if _, err := os.Stat(filepath.Join(settings.Dir(), "bundled-lm-detector.registered")); err != nil { t.Fatal(err) }
 }
 
 func TestPreparedBundleBootstrap(t *testing.T) {

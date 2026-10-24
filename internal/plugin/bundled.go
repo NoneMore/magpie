@@ -10,6 +10,7 @@ import (
     "embed"
     "encoding/hex"
     "io/fs"
+    "io"
     "strings"
 
     "github.com/yetone/magpie/internal/settings"
@@ -34,9 +35,14 @@ func EnsureBundledLMDetector() error {
     payload, err := fs.Sub(lmDetectorFiles, "bundled-lm-detector/runtime")
     if err != nil { return err }
     root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
+    // Carry forward the old marker, including a previous explicit uninstall.
+    if _, err := os.Stat(filepath.Join(root, ".registered")); err == nil {
+        if err := markBundled(marker); err != nil { return err }
+    } else if !errors.Is(err, os.ErrNotExist) { return err }
     target, err := materializeLMDetector(payload, root)
     if err != nil { return err }
-    return EnsureBundled(target, "magpie-lm-detector", filepath.Join(root, ".registered"))
+    return EnsureBundled(target, "magpie-lm-detector", marker)
 }
 
 // Immutable, content-addressed copies keep old Bun hosts running safely during
@@ -56,10 +62,8 @@ func materializeLMDetector(files fs.FS, root string) (string, error) {
     }); err != nil { return "", err }
     version := hex.EncodeToString(h.Sum(nil))[:20]
     target := filepath.Join(root, version, "lm-detector")
-    if _, err := os.Stat(filepath.Join(target, ".complete")); err == nil {
+    if materializedBundleMatches(files, target, version) {
         return target, nil
-    } else if !os.IsNotExist(err) {
-        return "", err
     }
     if err := os.MkdirAll(root, 0o700); err != nil { return "", err }
     stage, err := os.MkdirTemp(root, ".staging-")
@@ -82,13 +86,48 @@ func materializeLMDetector(files fs.FS, root string) (string, error) {
     if err := os.WriteFile(filepath.Join(stagePlugin, ".complete"), []byte(version+"\n"), 0o600); err != nil {
         return "", err
     }
-    if err := os.Rename(stage, filepath.Dir(target)); err != nil {
-        if _, statErr := os.Stat(filepath.Join(target, ".complete")); statErr == nil {
-            return target, nil
+    // Replace a damaged copy atomically, without mutating its files in place.
+    versionDir := filepath.Dir(target)
+    if materializedBundleMatches(files, target, version) { return target, nil }
+    if _, err := os.Lstat(versionDir); err == nil {
+        broken, err := os.MkdirTemp(root, ".broken-")
+        if err != nil { return "", err }
+        if err := os.Remove(broken); err != nil { return "", err }
+        if err := os.Rename(versionDir, broken); err != nil {
+            if materializedBundleMatches(files, target, version) { return target, nil }
+            return "", fmt.Errorf("move damaged LM Detector bundle: %w", err)
         }
+        defer os.RemoveAll(broken)
+    } else if !errors.Is(err, os.ErrNotExist) { return "", err }
+    if err := os.Rename(stage, versionDir); err != nil {
+        if materializedBundleMatches(files, target, version) { return target, nil }
         return "", fmt.Errorf("publish bundled LM Detector: %w", err)
     }
     return target, nil
+}
+
+// Check the bytes, not just the presence of .complete: a damaged extraction
+// must not be reused forever on later launches.
+func materializedBundleMatches(files fs.FS, target, version string) bool {
+    b, err := os.ReadFile(filepath.Join(target, ".complete"))
+    if err != nil || string(b) != version+"\n" { return false }
+    h := sha256.New()
+    err = fs.WalkDir(files, ".", func(name string, entry fs.DirEntry, err error) error {
+        if err != nil { return err }
+        if entry.IsDir() { return nil }
+        file := filepath.Join(target, filepath.FromSlash(name))
+        st, err := os.Lstat(file)
+        if err != nil { return err }
+        if !st.Mode().IsRegular() { return fmt.Errorf("not a regular bundle file: %s", name) }
+        f, err := os.Open(file)
+        if err != nil { return err }
+        defer f.Close()
+        h.Write([]byte(name))
+        h.Write([]byte{0})
+        _, err = io.Copy(h, f)
+        return err
+    })
+    return err == nil && hex.EncodeToString(h.Sum(nil))[:20] == version
 }
 
 // EnsureBundled installs a fork-shipped local plugin exactly once, then follows
@@ -115,7 +154,7 @@ func EnsureBundled(spec, packageName, marker string) error {
     l := Load()
     found := -1
     for i, e := range l.Plugins {
-        if e.Spec == spec || bundledPackage(e, packageName) {
+        if e.Spec == spec || bundledPackage(e, packageName) || oldBundledSpec(e.Spec, spec) {
             found = i
             break
         }
@@ -151,6 +190,18 @@ func bundledPackage(e Entry, name string) bool {
     if err != nil { return false }
     var pkg struct { Name string }
     return json.Unmarshal(b, &pkg) == nil && pkg.Name == name
+}
+
+// Match a prior content-addressed extraction even if its package.json was
+// deleted with the cache. Do not treat arbitrary user plugin paths as ours.
+func oldBundledSpec(old, current string) bool {
+    if !filepath.IsAbs(old) || filepath.Base(old) != filepath.Base(current) { return false }
+    rel, err := filepath.Rel(filepath.Dir(filepath.Dir(current)), old)
+    if err != nil { return false }
+    parts := strings.Split(filepath.ToSlash(rel), "/")
+    if len(parts) != 2 || len(parts[0]) != 20 || parts[1] != filepath.Base(current) { return false }
+    _, err = hex.DecodeString(parts[0])
+    return err == nil
 }
 
 func markBundled(marker string) error {
