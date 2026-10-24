@@ -4042,15 +4042,32 @@ function routingPage(part) {
   const deciderOf = (id) => groups?.deciders?.find((m) => m.id === splitMember(id)[0]);
   const modelOf = (id) => groups?.models.find((m) => m.id === id) || groups?.models.find((m) => m.id === splitMember(id)[0]) || deciderOf(id);
   // a group's patterns (#766, provider.IsPattern): a glob, * any run of
-  // characters over the provider/model id in any case, or re:<regexp> over
-  // the whole id. The group keeps them, and the models they match now
-  // follow those it names, in the catalog's order (Group.Matched)
+  // characters over the provider/model id, or re:<regexp> over the whole
+  // id, both in any case (provider.compilePattern). The group keeps them,
+  // and the models they match now follow those it names, in the catalog's
+  // order (Group.Matched)
   const isPattern = (s) => s.startsWith("re:") || s.includes("*");
   function patternRe(p) {
     try {
-      if (p.startsWith("re:")) return p.length > 3 ? new RegExp("^(?:" + p.slice(3) + ")$") : null;
+      if (p.startsWith("re:")) return goRe(p.slice(3));
       return new RegExp("^" + p.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
     } catch { return null; }
+  }
+  // goRe is a re: pattern's regexp as Go reads it, in any case: Go's
+  // leading flag group, "(?-i)" to make case matter, is JS's flags (U,
+  // ungreedy, changes no whole-id match). null when it has none or JS
+  // can't read it.
+  function goRe(src) {
+    if (!src.trim()) return null;
+    const flags = new Set(["i"]);
+    const lead = /^\(\?([imsU]*)(?:-([imsU]*))?\)/.exec(src);
+    if (lead) {
+      if (!lead[1] && !lead[2]) return null;
+      for (const f of lead[1]) if (f !== "U") flags.add(f);
+      for (const f of lead[2] || "") flags.delete(f);
+      src = src.slice(lead[0].length);
+    }
+    return new RegExp("^(?:" + src + ")$", [...flags].join(""));
   }
   // the models served now the patterns match, but those the group names
   // (at any reasoning): as provider.matchesIn finds them

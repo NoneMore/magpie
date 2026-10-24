@@ -402,6 +402,9 @@ type Server struct {
 	// taken off it (see Relisten)
 	lnMu sync.Mutex
 	ln   net.Listener
+	// handedOff: another magpie serves the port now, and this one's end
+	// waits for its requests in flight to finish (handover.go)
+	handedOff atomic.Bool
 	// what it serves other computers TLS with, nil without (tls.go)
 	tls *tls.Config
 	// the images described for models that can't see them (vision.go)
@@ -535,6 +538,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.lnMu.Lock()
 	s.ln = ln
 	s.lnMu.Unlock()
+	// a socket handed over (handover.go): the magpie that had it stops
+	// accepting once told this one serves on it
+	if ack := takeAck(); ack != nil {
+		go ack()
+	}
 	// the observers plugins registered (usage.Observer) run while this
 	// process serves, and plugins turned on or off elsewhere (the window,
 	// `magpie plugin builtin`) come and go here too
@@ -625,11 +633,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	go func() {
 		defer close(drained)
 		<-ctx.Done()
-		wait := 2 * time.Second
-		if Handover {
-			wait = 15 * time.Minute
-		}
-		c, cancel := context.WithTimeout(context.Background(), wait)
+		c, cancel := context.WithTimeout(context.Background(), s.drainFor())
 		defer cancel()
 		srv.Shutdown(c)
 		s.subscription.abortAll()
