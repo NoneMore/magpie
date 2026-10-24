@@ -5,9 +5,6 @@
   "type": "module",
   "main": "./index.js",
   "description": "Bundled native LM Detector Page plugin for Magpie",
-  "dependencies": {
-    "lmfpd": "0.0.1792416845676"
-  },
   "magpie": {
     "page": {
       "title": "Model Fingerprint",

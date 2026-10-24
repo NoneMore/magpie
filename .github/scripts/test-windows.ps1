@@ -3,11 +3,19 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+Write-Host '=== Prepare offline LM Detector resources (build-time npm only) ==='
+node .github/scripts/prepare-lm-detector.mjs
+if ($LASTEXITCODE -ne 0) { throw 'LM Detector reference preparation failed' }
+
 Write-Host '=== Vet and compile all Go tests (same Windows policy as upstream) ==='
 go vet ./...
 if ($LASTEXITCODE -ne 0) { throw 'go vet failed' }
 go test -run '^$' ./...
 if ($LASTEXITCODE -ne 0) { throw 'Windows compile-all tests failed' }
+
+Write-Host '=== Offline bundle bootstrap and migration regressions ==='
+go test -count=1 ./internal/plugin -run '^(TestBundled|TestMaterialize|TestPreparedBundle)'
+if ($LASTEXITCODE -ne 0) { throw 'bundled plugin registration failed' }
 
 Write-Host '=== Fork Codex, GUI and plugin permission regressions ==='
 # Deliberately do not execute TestCoreScriptBudget: this is an upstream

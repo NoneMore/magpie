@@ -1,14 +1,24 @@
-name: LM Detector native plugin
+name: LM Detector bundled plugin
 
 on:
   push:
     paths:
       - 'plugins/lm-detector/**'
       - '.github/workflows/lm-detector.yml'
+      - '.github/scripts/prepare-lm-detector.mjs'
+      - 'internal/cli/bundled_lm_detector.go'
+      - 'internal/cli/main.go'
+      - 'internal/plugin/bundled*.go'
+      - 'internal/plugin/bundled-lm-detector/**'
   pull_request:
     paths:
       - 'plugins/lm-detector/**'
       - '.github/workflows/lm-detector.yml'
+      - '.github/scripts/prepare-lm-detector.mjs'
+      - 'internal/cli/bundled_lm_detector.go'
+      - 'internal/cli/main.go'
+      - 'internal/plugin/bundled*.go'
+      - 'internal/plugin/bundled-lm-detector/**'
 
 jobs:
   test-native-detector:
@@ -19,12 +29,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install reference data package
-        working-directory: plugins/lm-detector
-        run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Show installed reference-data version
-        working-directory: plugins/lm-detector
-        run: npm ls lmfpd --depth=0
+      - name: Prepare pinned build-time reference data
+        run: node .github/scripts/prepare-lm-detector.mjs
       - name: Run direct-detector core tests
         working-directory: plugins/lm-detector
         run: bun test tests/*.test.ts
@@ -33,6 +39,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Test offline bundle registration and upgrades
+        env:
+          CGO_ENABLED: '0'
+          LM_DETECTOR_REQUIRED: '1'
+        run: go test -tags nogui -count=1 ./internal/plugin -run '^(TestBundled|TestMaterialize|TestPreparedBundle)'
       - name: Check Go built-in plugin import invariants
         env:
           CGO_ENABLED: '0'

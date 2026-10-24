@@ -1,8 +1,8 @@
 // Native Magpie Page backend. No CLI process, no fpd subprocess.
 // The reference bank/data are read from the lmfpd npm package; the original
 // detector algorithm is vendored from Ikaleio/lm-detector shared/.
-import {createRequire} from "node:module";
-import {dirname, join} from "node:path";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {readFile} from "node:fs/promises";
 import {randomUUID} from "node:crypto";
 import {generateChallenges} from "./shared/challenge-browser.js";
@@ -11,7 +11,6 @@ import {throughputMeter} from "./shared/throughput.ts";
 import {decodeDetector} from "./shared/detector-codec.ts";
 import {analyzeSharedOutputs, supportsSharedDetector} from "./shared/shared-detector.ts";
 
-const require = createRequire(import.meta.url);
 const jobs = new Map();
 const MAX_RUNNING = 2, MAX_HISTORY = 40, MAX_AGE = 24 * 60 * 60 * 1000;
 const MAX_REPEAT = 20, DEFAULT_TIMEOUT = 120;
@@ -73,10 +72,7 @@ async function models() {
 
 async function references() {
   if (!referencePromise) referencePromise = (async () => {
-    let pkg;
-    try { pkg = require.resolve("lmfpd/package.json"); }
-    catch { throw Error("Missing lmfpd reference files. Run npm install in plugins/lm-detector."); }
-    const data = join(dirname(pkg), "data");
+    const data = fileURLToPath(new URL("./data", import.meta.url));
     const [bankFile,detectorFile] = await Promise.all([
       readFile(join(data,"unified_bank.json"),"utf8"),
       readFile(join(data,"shared_detector.bin"))

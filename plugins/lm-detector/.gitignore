@@ -1,2 +1,4 @@
 node_modules/
 .DS_Store
+data/unified_bank.json
+data/shared_detector.bin

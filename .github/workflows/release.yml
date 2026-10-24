@@ -87,7 +87,7 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -104,6 +104,12 @@ jobs:
         if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true' && github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]'
         shell: pwsh
         run: ./.github/scripts/test-windows.ps1
+
+      # CI-only npm fetch. Compiled Windows EXEs contain the offline reference assets.
+      - name: Embed pinned LM Detector reference files
+        if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true'
+        shell: bash
+        run: node .github/scripts/prepare-lm-detector.mjs
 
       - name: Build Windows desktop and CLI (x64 / ARM64)
         if: steps.source.outputs.stale != 'true' && steps.meta.outputs.exists != 'true'
