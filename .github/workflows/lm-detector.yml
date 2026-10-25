@@ -46,16 +46,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Resolve pinned SDK and capture canonical Go files
+      - name: Verify pinned Go SDK and committed formatting
         env:
           CGO_ENABLED: '0'
         run: |
           go mod download github.com/Ikaleio/lm-detector/sdk/go@v0.1.0 github.com/klauspost/compress@v1.18.4
-          for f in internal/lmdetector/detector.go internal/lmdetector/routes.go internal/lmdetector/detector_test.go plugins/lm-detector/lm_detector.go internal/cli/bundled_lm_detector.go internal/plugin/bundled.go; do
-            gofmt -w "$f"
-            printf 'MAGPIE-ARTIFACT %s %s\n' "$f" "$(base64 -w0 "$f")"
-          done
-          printf 'MAGPIE-ARTIFACT go.sum %s\n' "$(base64 -w0 go.sum)"
+          go mod verify
+          unformatted=$(gofmt -l internal/lmdetector/*.go plugins/lm-detector/lm_detector.go internal/cli/bundled_lm_detector.go internal/plugin/bundled.go internal/gui/api.go plugins/all/all.go)
+          if [ -n "$unformatted" ]; then printf 'Go files need gofmt:\n%s\n' "$unformatted"; exit 1; fi
       - name: Test native Go SDK adapter on mocked Gateway
         env:
           CGO_ENABLED: '0'
