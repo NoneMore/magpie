@@ -86,11 +86,11 @@ func TestNativeSamplingThroughGateway(t *testing.T) {
    if request.Stream {
     w.Header().Set("Content-Type","text/event-stream")
     if isChat {
-     fmt.Fprintf(w,"data: %s\\n\\n",mustJSON(map[string]any{"choices":[]any{map[string]any{"delta":map[string]string{"content":numbers},"finish_reason":nil}}}))
-     fmt.Fprint(w,"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\\n\\ndata: [DONE]\\n\\n")
+     fmt.Fprintf(w,"data: %s\n\n",mustJSON(map[string]any{"choices":[]any{map[string]any{"delta":map[string]string{"content":numbers},"finish_reason":nil}}}))
+     fmt.Fprint(w,"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
     } else {
-     fmt.Fprintf(w,"data: %s\\n\\n",mustJSON(map[string]any{"type":"response.output_text.delta","delta":numbers}))
-     fmt.Fprint(w,"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\\n\\n")
+     fmt.Fprintf(w,"data: %s\n\n",mustJSON(map[string]any{"type":"response.output_text.delta","delta":numbers}))
+     fmt.Fprint(w,"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
     }
    } else if isChat {
     _=json.NewEncoder(w).Encode(map[string]any{"choices":[]any{map[string]any{"finish_reason":"stop","message":map[string]string{"content":numbers}}}})
