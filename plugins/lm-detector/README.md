@@ -1,57 +1,31 @@
-# LM Detector — Magpie native Page plugin
+# LM Detector — native Magpie Go built-in (draft)
 
-This plugin lives in the Magpie fork source tree under `plugins/lm-detector`. It is a **native Magpie Page + Provider Action** that calls its own Bun tool backend using the fork's existing permissioned `magpie.tool.run` bridge. **No CLI subprocess, MCP UI, or `fpd` execution is involved.**
+The fingerprint detector has been moved to the `plugins/lm-detector` built-in plugin registered through `internal/pluginrt`. Its model-fingerprint engine is now the pinned upstream **Go SDK** (`github.com/Ikaleio/lm-detector/sdk/go`); the native management endpoints and job manager live under `internal/lmdetector` and the embedded first-party window page is under `internal/gui/assets/plugins/lm-detector`.
 
-**Installation (NoneMore/magpie fork releases):** The Windows desktop and CLI binaries embed this plugin and its pinned reference assets. On first normal startup the app unpacks an immutable local copy, registers it in the existing Plugins list, and exposes the Page and Provider action. No npm install, CLI add, or lm-detector download is required on the user's machine. The existing Bun plugin host remains in use (Magpie may still download Bun once, as it does for other plugins).
+The native detector does not run `fpd` or the old Bun Page/tool backend. The Gateway key is kept on the Go side, and only direct `provider/model` IDs in the Gateway's `/v1/models` listing may be checked. It offers Chat/Responses, streaming or JSON, count 1–3, parallel 1–3, strict (3/3), repeat 1–20, reasoning effort and per-request timeout. At most two jobs run concurrently, jobs are in memory, and turning the built-in off cancels active work.
 
-**Building from source:** Run `node .github/scripts/prepare-lm-detector.mjs` from the repository root *before* `go build`. This build-only script fetches the pinned `lmfpd` data package; its reference files are embedded in the compiled binary. A plain Go build that omits this step will intentionally report a missing bundled asset rather than silently start a broken detector. CI and the fork's Windows release workflow run the preparation automatically.
+## Build and offline reference data
 
-The build script stages an ignored copy at `internal/plugin/bundled-lm-detector/runtime/` for Go embedding; `internal/plugin` is the only runtime package involved. The plugin remains a **Bun Page + tool plugin**, not a Go-native detector. Its activation follows the existing Plugins list: disabling it remains disabled after upgrades; removing it prevents automatic reinstallation. A user who already installed this exact local plugin is migrated to the prebundled copy while preserving Off, options and provider preferences.
+Before `go build`, run `node .github/scripts/prepare-lm-detector.mjs`. This build-time-only command fetches pinned paired `unified_bank.json` and `shared_detector.bin` data and stages them in the existing Go embedded bundle. The Go SDK opens **only** the extracted local reference directory through `LoadOptions.Sources`; it does not fetch reference data at user runtime. The existing content-addressed extraction validates its payload and refuses corrupted files.
 
-The build-time pinned `lmfpd` data package supplies **only** `data/unified_bank.json` and `data/shared_detector.bin`; the challenge generator, features, positional classifier, detector decoding and scoring are vendored directly from `Ikaleio/lm-detector/shared` and executed in the plugin host. No CLI imports or subprocesses are used.
+The obsolete JS implementation remains in the repository **only for the existing compatibility tests and build-time asset staging** during this draft. The runtime no longer installs it for new users. A one-time migration removes registered legacy entries from `plugins.json` and carries forward their Off or explicitly uninstalled state into `plugins.yml`; unrelated entries are not touched. See [tracking issue #9](https://github.com/NoneMore/magpie/issues/9).
 
-The fork already includes Page tool bridge. Grant the plugin `providers:list` and `tool:run` permissions. Open **Model Fingerprint** from the sidebar or click **Detect model fingerprint** on a Provider row. Select `OpenAI Responses` or `Chat Completions` according to Gateway/model compatibility. The Page enables SSE streaming by default, with a checkbox to switch back to non-streaming JSON. The backend `start` tool accepts an optional `stream: boolean` argument (default `false` for compatibility). The Page also exposes CLI-equivalent `effort`, `timeout`, `count`, `parallel`, `repeat`, and `strict` options. The model is requested explicitly from the Gateway; avoid routing groups/fallbacks, since they mix underlying models.
+## Native local API
 
-The Gateway defaults to `http://127.0.0.1:3425/v1` and its local development token `magpie`. To override when launching Magpie:
+All endpoints are in the same auth boundary as other Magpie UI APIs:
 
-```sh
-export MAGPIE_FPD_GATEWAY_URL='http://127.0.0.1:3425/v1'
-export MAGPIE_FPD_GATEWAY_KEY='YOUR_GATEWAY_KEY'
-```
+- `POST /api/lm-detector/models` — list available direct Gateway models.
+- `POST /api/lm-detector/start` — create a job using the JSON options above.
+- `POST /api/lm-detector/status` — read job status using `{"jobId":"..."}`.
+- `POST /api/lm-detector/cancel` — cancel an active job.
 
-Non-loopback gateways require HTTPS and an explicit key. No upstream provider key is sent into the Page iframe. The Page remains network-isolated.
+## Known gaps before marking this PR ready for review
 
-## UI detection options
+- The upstream Go `RequestSample` only returns when an HTTP sample finishes; therefore this initial Go UI can show queued, waiting and completed samples, but **not token-by-token integer progress, TTFT or tokens/sec**. Do not remove the old tests that assert these until an upstream callback or a native adapter restores equivalent behavior.
+- Provider row right-click action needs native menu integration; the new built-in page currently offers a Provider/Model picker but no row action.
+- The old Bun source/artifacts and old compatibility tests still need to be retired after native parity tests cover all cases.
+- Compilation/CI and live-provider UI parity still need verification. The PR remains a **draft** until those checks pass.
 
-These settings follow the [LM Detector CLI detect options](https://lm.ikale.io/docs/cli/detect/) without executing the CLI. They are passed through the Page's `magpie.tool.run("start", ...)` call and validated again in the Bun backend.
+## Security
 
-| UI option | Backend field | Default | Behavior |
-| --- | --- | --- | --- |
-| `-e, --effort` | `effort` | omitted | Optional provider-specific reasoning effort, passed as `reasoning.effort` (Responses) or `reasoning_effort` (Chat). |
-| `--timeout` | `timeout` | 120 seconds | 0.1–600 seconds. SSE times out until the first nonempty body chunk; JSON times out until the complete body has arrived. |
-| `--count` | `count` | 3 | 1–3 independent challenges per round. One or two samples yield uncalibrated rankings when model-like. |
-| `-p, --parallel` | `parallel` | 3 | 1–3 simultaneous requests per round, capped at `count`; does not change total requests. |
-| `-n, --repeat` | `repeat` | 1 | Sequential independent rounds (1–20 in this plugin to bound token cost). Each round is scored separately. |
-| `-s, --strict` | `strict` | false | Requires `count=3`, disables SSE integer-count capping and JSON trimming, and scores only if all three naturally complete with valid answers. |
-
-The plugin runs at most two *jobs* at once; each job can make at most `count × repeat` paid requests. The Page shows a per-sample integer progress bar and aggregate request progress across rounds. Streaming samples show first-body-byte timing (diagnostics), visible-text TTFT and an approximate tokens/second decode rate when enough unbuffered text events arrive. It uses the upstream throughput meter; empty heartbeat and metadata chunks do not establish TTFT, and short or buffered streams show TPS as unavailable. JSON samples expose total wall time only (TTFT/TPS are unavailable). After completion, selecting a round shows its saved timings and sampling progress. No extra Gateway credentials are exposed to the Page.
-
-## Design and limitations
-
-- Each round makes 1–3 independent challenges (292–332 integers each), sends up to three requests concurrently and calls the real upstream `analyzeSharedOutputs` scorer, with partial-sample support when strict mode is off. Routing groups are excluded because they can sample different models; configure model fallbacks carefully.
-- Each completed sample reports its minimum valid integer and a display-only abnormal-distribution flag when that minimum is at least 200, matching upstream LM Detector. The Page warns that the round may be unreliable and recommends a fresh run with new random prompts; the warning does not change ranking or probabilities.
-- The adapter supports both non-streaming JSON and SSE for Responses / Chat Completions. In relaxed mode, SSE consumes incremental events and caps once it has enough complete integers; strict mode waits for normal completion. SSE timeout covers the first body chunk only; JSON timeout covers the complete response. The Bun transport disables its separate idle timeout, preserving the upstream CLI's unbounded wait after the first SSE body chunk. Chat SSE requests optional usage metrics, but the relaxed cap normally ends the stream before its final usage event.
-- The reference bank + detector are loaded together and checked for matching metadata; a mismatch fails safely. The build-time `lmfpd` reference-data package is pinned to `0.0.1792416845676`, which passed the shared detector compatibility tests; the release pipeline checks the pinned version and runs reference-compatibility tests.
-- A run can be cancelled. Jobs and final reports are in-memory only and are lost when the plugin host restarts. At most two run concurrently.
-- Tokenizer probing is not implemented. The SSE adapter stops at the required integer count rather than waiting for a post-cap usage report; fingerprint scoring does not use token usage.
-- The `magpie.tool.run` bridge is a capability exposed by this fork, not by upstream Magpie. Existing plugin tools are also visible to the agent-facing plugin tools MCP server.
-- The fork embeds and registers the plugin into the existing Bun plugin list at startup; this is deliberately **not** a Go `pluginrt` built-in toggle, which uses a different Page and lifecycle API.
-- Each run can incur model tokens/cost. The ranking's calibrated confidence is **closed-set** against the included reference identities and cannot prove the true model identity.
-
-## Third-party source
-
-The files in `shared/` are copied from `Ikaleio/lm-detector` at commit `70410db4522387c7d4a6dff8c7a4b6ce0f0239f1` under its MIT license. See `LICENSE-LM-DETECTOR`. Keep the copied algorithm and the data package in sync.
-
-## Verification
-
-Prepare reference data with `node .github/scripts/prepare-lm-detector.mjs` before building or running the full tests. Static files can be checked with `node --check index.js && node --check page/app.js`. The CI runs Bun unit tests and an end-to-end backend integration test using the real Go Magpie Gateway handler, Bun plugin host and vendored scorer against a loopback-only mock upstream, covering Responses and Chat in both JSON and SSE modes. It does not require an external model account. A manual Page + provider-action + real-model check remains a separate acceptance step.
+Non-loopback Gateway URLs must be HTTPS and explicitly supply `MAGPIE_FPD_GATEWAY_KEY`. Local loopback uses the previous `magpie` default when no key is set. Keys never enter browser JavaScript or the detector's result JSON. Fingerprinting sends paid model requests and its closed-set ranking is not proof of identity.
