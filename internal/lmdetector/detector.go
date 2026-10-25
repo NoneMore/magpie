@@ -1,0 +1,349 @@
+// Package lmdetector adapts the upstream Go SDK to Magpie's native plugin UI.
+// It never launches the legacy Bun detector or exposes Gateway credentials to the page.
+package lmdetector
+
+import (
+ "context"
+ "crypto/rand"
+ "encoding/hex"
+ "encoding/json"
+ "errors"
+ "fmt"
+ "io"
+ "net"
+ "net/http"
+ "net/url"
+ "os"
+ "slices"
+ "strings"
+ "sync"
+ "time"
+
+ lmfpd "github.com/Ikaleio/lm-detector/sdk/go"
+ "github.com/yetone/magpie/internal/gateway"
+ "github.com/yetone/magpie/internal/plugin"
+)
+
+const maxJobs = 2
+const maxSaved = 64
+
+type Options struct {
+ Model string `json:"model"`
+ Format string `json:"format"`
+ Stream bool `json:"stream"`
+ Effort string `json:"effort"`
+ Timeout float64 `json:"timeout"`
+ Count int `json:"count"`
+ Parallel int `json:"parallel"`
+ Repeat int `json:"repeat"`
+ Strict bool `json:"strict"`
+}
+
+type Sample struct {
+ Index int `json:"index"`
+ State string `json:"state"`
+ Count int `json:"count"`
+ ExpectedCount int `json:"expectedCount"`
+ MinimumValidNumber *int `json:"minimumValidNumber"`
+ AnomalousDistribution bool `json:"anomalousDistribution"`
+ StartedAt *int64 `json:"startedAt"`
+ FinishedAt *int64 `json:"finishedAt"`
+ DurationMs *int64 `json:"durationMs"`
+ Error string `json:"error,omitempty"`
+}
+
+type Round struct {
+ Round int `json:"round"`
+ Samples []Sample `json:"samples"`
+ Analysis *lmfpd.Analysis `json:"analysis"`
+ Error string `json:"error,omitempty"`
+}
+
+type Job struct {
+ JobID string `json:"jobId"`
+ Options
+ State string `json:"state"`
+ StartedAt string `json:"startedAt"`
+ FinishedAt *string `json:"finishedAt"`
+ Completed int `json:"completed"`
+ Round int `json:"round"`
+ Rounds []Round `json:"rounds"`
+ Samples []Sample `json:"samples"`
+ Analysis *lmfpd.Analysis `json:"analysis"`
+ Error string `json:"error,omitempty"`
+ cancel context.CancelFunc
+}
+
+type manager struct {
+ mu sync.Mutex
+ enabled bool
+ starting int
+ jobs map[string]*Job
+ detector *lmfpd.Detector
+}
+var service = manager{jobs: make(map[string]*Job)}
+
+func Enable() {
+ service.mu.Lock()
+ defer service.mu.Unlock()
+ service.enabled = true
+}
+
+// Disable cancels active work, and the next API request will be refused.
+func Disable() {
+ service.mu.Lock()
+ defer service.mu.Unlock()
+ service.enabled = false
+ for _, j := range service.jobs {
+  if j.State == "running" {
+   j.State = "cancelled"
+   finished := time.Now().UTC().Format(time.RFC3339Nano)
+   j.FinishedAt = &finished
+   j.cancel()
+  }
+ }
+}
+
+func Enabled() bool {
+ service.mu.Lock()
+ defer service.mu.Unlock()
+ return service.enabled
+}
+
+func id() (string,error) {
+ b:=make([]byte,16)
+ if _,err:=rand.Read(b);err!=nil{return "",err}
+ return hex.EncodeToString(b),nil
+}
+
+func gatewayConfig() (string,string,error) {
+ base:=strings.TrimRight(strings.TrimSpace(os.Getenv("MAGPIE_FPD_GATEWAY_URL")),"/")
+ if base=="" { base=gateway.URL() }
+ u,err:=url.Parse(base)
+ if err!=nil||u.Host==""||u.User!=nil||u.RawQuery!=""||u.Fragment!="" {return "","",errors.New("invalid Gateway URL")}
+ loopback:=false
+ if host:=u.Hostname();host=="localhost" {loopback=true} else if ip:=net.ParseIP(host);ip!=nil&&ip.IsLoopback(){loopback=true}
+ if u.Scheme!="https"&&!(u.Scheme=="http"&&loopback) {return "","",errors.New("remote Gateway requires HTTPS")}
+ if !strings.HasSuffix(u.Path,"/v1") {u.Path=strings.TrimRight(u.Path,"/")+"/v1"}
+ key:=strings.TrimSpace(os.Getenv("MAGPIE_FPD_GATEWAY_KEY"))
+ if key==""&&loopback {key="magpie"}
+ if key=="" {return "","",errors.New("remote Gateway requires MAGPIE_FPD_GATEWAY_KEY")}
+ return strings.TrimRight(u.String(),"/"),key,nil
+}
+
+func Models(ctx context.Context) ([]string,error) {
+ base,key,err:=gatewayConfig()
+ if err!=nil{return nil,err}
+ req,err:=http.NewRequestWithContext(ctx,"GET",base+"/models",nil)
+ if err!=nil{return nil,err}
+ req.Header.Set("Authorization","Bearer "+key)
+ client:=&http.Client{Timeout:15*time.Second,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
+ resp,err:=client.Do(req)
+ if err!=nil{return nil,err}
+ defer resp.Body.Close()
+ if resp.StatusCode!=200 {return nil,fmt.Errorf("Gateway models: HTTP %d",resp.StatusCode)}
+ b,err:=io.ReadAll(io.LimitReader(resp.Body,1<<20+1))
+ if err!=nil{return nil,err}
+ if len(b)>1<<20{return nil,errors.New("Gateway response is too large")}
+ var payload struct {Data []struct {ID string `json:"id"`} `json:"data"`}
+ if err=json.Unmarshal(b,&payload);err!=nil{return nil,err}
+ models:=make([]string,0,len(payload.Data))
+ for _,v:=range payload.Data {
+  if !validModel(v.ID) {continue}
+  models=append(models,v.ID)
+ }
+ slices.Sort(models)
+ return slices.Compact(models),nil
+}
+
+func validModel(v string)bool {
+ if v==""||strings.HasPrefix(v,"group/")||strings.HasPrefix(v,"routing/")||strings.ContainsAny(v," \n\t\r") {return false}
+ p,m,ok:=strings.Cut(v,"/")
+ return ok&&p!=""&&m!=""&&p!="group"
+}
+
+func (o *Options) check() error {
+ if !validModel(o.Model){return errors.New("select an explicit provider/model, not a routing group")}
+ if o.Format==""{o.Format="responses"}
+ if o.Format!="responses"&&o.Format!="chat"{return errors.New("invalid API format")}
+ if len(o.Effort)>64||strings.TrimSpace(o.Effort)!=o.Effort||strings.ContainsAny(o.Effort,"\r\n"){return errors.New("invalid reasoning effort")}
+ if o.Timeout==0{o.Timeout=120}
+ if o.Timeout<0.1||o.Timeout>600{return errors.New("timeout must be 0.1–600 seconds")}
+ if o.Count==0{o.Count=3}
+ if o.Count<1||o.Count>3{return errors.New("count must be 1–3")}
+ if o.Parallel==0{o.Parallel=3}
+ if o.Parallel<1||o.Parallel>3{return errors.New("parallel must be 1–3")}
+ if o.Parallel>o.Count{o.Parallel=o.Count}
+ if o.Repeat==0{o.Repeat=1}
+ if o.Repeat<1||o.Repeat>20{return errors.New("repeat must be 1–20")}
+ if o.Strict&&o.Count!=3{return errors.New("strict mode requires 3 challenges")}
+ return nil
+}
+
+func reference(ctx context.Context) (*lmfpd.Detector,error) {
+ service.mu.Lock()
+ d:=service.detector
+ service.mu.Unlock()
+ if d!=nil{return d,nil}
+ dir,err:=plugin.BundledLMDetectorDataDir()
+ if err!=nil{return nil,err}
+ loaded,err:=lmfpd.Load(ctx,lmfpd.LoadOptions{Sources:[]string{dir}})
+ if err!=nil{return nil,fmt.Errorf("offline fingerprint references: %w",err)}
+ service.mu.Lock()
+ if service.detector==nil{service.detector=loaded}
+ d=service.detector
+ service.mu.Unlock()
+ return d,nil
+}
+
+func (o Options) config(base,key string) lmfpd.DetectConfig {
+ api:=lmfpd.APIResponses
+ if o.Format=="chat"{api=lmfpd.APIChatCompletions}
+ return lmfpd.DetectConfig{BaseURL:base,APIKey:key,Model:o.Model,API:api,NoStream:!o.Stream,
+  Effort:o.Effort,Timeout:time.Duration(o.Timeout*float64(time.Second)),Strict:o.Strict,
+  Count:o.Count,Parallel:o.Parallel}
+}
+
+func snapshot(j *Job) Job {
+ out:=*j
+ out.cancel=nil
+ out.Rounds=make([]Round,len(j.Rounds))
+ for i,r:=range j.Rounds{out.Rounds[i]=r;out.Rounds[i].Samples=slices.Clone(r.Samples)}
+ out.Samples=slices.Clone(j.Samples)
+ return out
+}
+
+func Status(jobID string) (Job,error) {
+ service.mu.Lock()
+ defer service.mu.Unlock()
+ j:=service.jobs[jobID]
+ if j==nil{return Job{},errors.New("fingerprint job not found")}
+ return snapshot(j),nil
+}
+
+func Start(ctx context.Context,opts Options)(Job,error) {
+ if err:=opts.check();err!=nil{return Job{},err}
+ service.mu.Lock()
+ if !service.enabled {service.mu.Unlock();return Job{},errors.New("native LM Detector is disabled")}
+ running:=service.starting
+ for _,j:=range service.jobs{if j.State=="running"{running++}}
+ if running>=maxJobs {service.mu.Unlock();return Job{},errors.New("two detections are already running")}
+ service.starting++
+ service.mu.Unlock()
+ defer func(){service.mu.Lock();service.starting--;service.mu.Unlock()}()
+ list,err:=Models(ctx)
+ if err!=nil{return Job{},err}
+ if !slices.Contains(list,opts.Model){return Job{},errors.New("model is not currently exposed by Gateway")}
+ d,err:=reference(ctx)
+ if err!=nil{return Job{},err}
+ base,key,err:=gatewayConfig()
+ if err!=nil{return Job{},err}
+ uid,err:=id()
+ if err!=nil{return Job{},err}
+ service.mu.Lock()
+ defer service.mu.Unlock()
+ if !service.enabled{return Job{},errors.New("native LM Detector was disabled")}
+ runCtx,cancel:=context.WithCancel(context.Background())
+ j:=&Job{JobID:uid,Options:opts,State:"running",StartedAt:time.Now().UTC().Format(time.RFC3339Nano),
+  Rounds:[]Round{},Samples:[]Sample{},cancel:cancel}
+ service.jobs[uid]=j
+ if len(service.jobs)>maxSaved {
+  for key,old:=range service.jobs {if key!=uid&&old.State!="running"{delete(service.jobs,key);break}}
+ }
+ go execute(runCtx,j,d,opts.config(base,key))
+ return snapshot(j),nil
+}
+
+func Cancel(jobID string)(Job,error) {
+ service.mu.Lock()
+ defer service.mu.Unlock()
+ j:=service.jobs[jobID]
+ if j==nil{return Job{},errors.New("fingerprint job not found")}
+ if j.State=="running" {
+  j.State="cancelled"
+  finished:=time.Now().UTC().Format(time.RFC3339Nano)
+  j.FinishedAt=&finished
+  j.cancel()
+ }
+ return snapshot(j),nil
+}
+
+func execute(ctx context.Context,j *Job,d *lmfpd.Detector,cfg lmfpd.DetectConfig) {
+ defer j.cancel()
+ fail:=func(err error){service.mu.Lock();defer service.mu.Unlock();if j.State!="running"{return};j.State="failed";j.Error=err.Error();now:=time.Now().UTC().Format(time.RFC3339Nano);j.FinishedAt=&now}
+ for round:=1;round<=j.Repeat;round++ {
+  if ctx.Err()!=nil{return}
+  challenges,err:=lmfpd.GenerateChallenges(j.Count)
+  if err!=nil {fail(err);return}
+  samples:=make([]Sample,len(challenges))
+  for i,c:=range challenges{samples[i]=Sample{Index:i+1,State:"queued",ExpectedCount:c.ExpectedCount}}
+  service.mu.Lock()
+  if j.State!="running"{service.mu.Unlock();return}
+  j.Round=round;j.Samples=samples
+  service.mu.Unlock()
+  result:=make([]lmfpd.Sample,len(challenges))
+  var wg sync.WaitGroup
+  var next int
+  var mu sync.Mutex
+  for worker:=0;worker<j.Parallel;worker++ {
+   wg.Add(1)
+   go func(){
+    defer wg.Done()
+    for {
+     mu.Lock();index:=next;next++;mu.Unlock()
+     if index>=len(challenges)||ctx.Err()!=nil{return}
+     start:=time.Now()
+     ms:=start.UnixMilli()
+     service.mu.Lock()
+     if j.State!="running"{service.mu.Unlock();return}
+     j.Samples[index].State="waiting";j.Samples[index].StartedAt=&ms
+     service.mu.Unlock()
+     sample:=lmfpd.RequestSample(ctx,cfg,challenges[index])
+     finish:=time.Now().UnixMilli()
+     duration:=time.Since(start).Milliseconds()
+     numbers:=lmfpd.ParseNumbers(sample.Text)
+     var minimum *int
+     if len(numbers)>0 {
+      n:=slices.Min(numbers);minimum=&n
+     }
+     service.mu.Lock()
+     result[index]=sample
+     if j.State=="running" {
+      s:=&j.Samples[index]
+      s.State=sample.State;s.Count=sample.Count;s.MinimumValidNumber=minimum
+      s.AnomalousDistribution=minimum!=nil&&*minimum>=200
+      s.FinishedAt=&finish;s.DurationMs=&duration
+      if sample.Error!=nil{s.Error=*sample.Error}
+      j.Completed++
+     }
+     service.mu.Unlock()
+    }
+   }()
+  }
+  wg.Wait()
+  if ctx.Err()!=nil{return}
+  outputs:=make([]lmfpd.Output,len(challenges))
+  accepted:=0
+  for i,s:=range result {
+   outputs[i].ExpectedCount=challenges[i].ExpectedCount
+   if s.State=="complete"||s.State=="truncated"{outputs[i].Text=s.Text;accepted++}
+  }
+  var analysis *lmfpd.Analysis
+  var why string
+  if accepted==0||j.Strict&&accepted!=3 {
+   why="No valid samples. This round cannot be scored."
+   if j.Strict{why=fmt.Sprintf("Strict mode needs 3/3 successful samples, got %d/3",accepted)}
+  }else{
+   analysis,err=d.Analyze(outputs,j.Strict)
+   if err!=nil{why=err.Error()}else if len(analysis.Results)==0{why=analysis.Evidence.Reason}
+  }
+  service.mu.Lock()
+  if j.State!="running"{service.mu.Unlock();return}
+  j.Analysis=analysis
+  j.Rounds=append(j.Rounds,Round{Round:round,Samples:slices.Clone(j.Samples),Analysis:analysis,Error:why})
+  service.mu.Unlock()
+ }
+ service.mu.Lock()
+ if j.State=="running"{j.State="done";now:=time.Now().UTC().Format(time.RFC3339Nano);j.FinishedAt=&now}
+ service.mu.Unlock()
+}
