@@ -250,3 +250,57 @@ func BundledLMDetectorDataDir() (string, error) {
     if err != nil { return "", err }
     return filepath.Join(target, "data"), nil
 }
+
+
+// LegacyLMDetectorPreference checks the old bundled Bun plugin without changing
+// plugins.json. A recorded removal must not silently switch the native feature on.
+func LegacyLMDetectorPreference() (found, off, removed bool, err error) {
+    marker := filepath.Join(settings.Dir(), "bundled-lm-detector.registered")
+    raw, err := os.ReadFile(listPath())
+    if errors.Is(err, os.ErrNotExist) {
+        raw = nil
+    } else if err != nil {
+        return false, false, false, err
+    }
+    var l List
+    if len(raw)>0 {
+        if err:=json.Unmarshal(raw,&l);err!=nil {return false,false,false,fmt.Errorf("cannot migrate malformed plugins.json: %w",err)}
+    }
+    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
+    for _,e := range l.Plugins {
+        if bundledPackage(e,"magpie-lm-detector") || oldBundledSpec(e.Spec,root,"lm-detector") {
+            return true,e.Off,false,nil
+        }
+    }
+    _,err=os.Stat(marker)
+    if err==nil{return false,false,true,nil}
+    if errors.Is(err,os.ErrNotExist){return false,false,false,nil}
+    return false,false,false,err
+}
+
+// RetireLegacyLMDetector takes only the fork-owned detector out of the Bun
+// plugins list. All unrelated plugins, their options and preferred providers
+// remain unchanged; a damaged list fails closed and is never overwritten.
+func RetireLegacyLMDetector() error {
+    listMu.Lock()
+    defer listMu.Unlock()
+    raw,err:=os.ReadFile(listPath())
+    if errors.Is(err,os.ErrNotExist){return nil}
+    if err!=nil{return err}
+    var l List
+    if err=json.Unmarshal(raw,&l);err!=nil{return fmt.Errorf("cannot migrate malformed plugins.json: %w",err)}
+    root:=filepath.Join(settings.Dir(),"bundled","lm-detector")
+    kept:=make([]Entry,0,len(l.Plugins))
+    removed:=map[string]bool{}
+    for _,e:=range l.Plugins {
+        if bundledPackage(e,"magpie-lm-detector") || oldBundledSpec(e.Spec,root,"lm-detector") {
+            removed[e.Spec]=true
+        } else {kept=append(kept,e)}
+    }
+    if len(removed)==0{return nil}
+    l.Plugins=kept
+    for name,spec:=range l.Prefer {if removed[spec]{delete(l.Prefer,name)}}
+    if err:=save(l);err!=nil{return err}
+    Restart()
+    return nil
+}
