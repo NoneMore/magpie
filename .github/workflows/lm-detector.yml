@@ -46,6 +46,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Resolve pinned SDK and capture canonical Go files
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go mod download github.com/Ikaleio/lm-detector/sdk/go@v0.1.0 github.com/klauspost/compress@v1.18.4
+          for f in internal/lmdetector/detector.go internal/lmdetector/routes.go internal/lmdetector/detector_test.go plugins/lm-detector/lm_detector.go internal/cli/bundled_lm_detector.go internal/plugin/bundled.go; do
+            gofmt -w "$f"
+            printf 'MAGPIE-ARTIFACT %s %s\n' "$f" "$(base64 -w0 "$f")"
+          done
+          printf 'MAGPIE-ARTIFACT go.sum %s\n' "$(base64 -w0 go.sum)"
       - name: Test native Go SDK adapter on mocked Gateway
         env:
           CGO_ENABLED: '0'
