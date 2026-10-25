@@ -1,9 +1,16 @@
-name: LM Detector bundled plugin
+name: LM Detector native Go migration
 
 on:
   push:
     paths:
       - 'plugins/lm-detector/**'
+      - 'internal/lmdetector/**'
+      - 'internal/gui/assets/plugins/lm-detector/**'
+      - 'internal/gui/assets/index.html'
+      - 'internal/gui/api.go'
+      - 'plugins/all/all.go'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/lm-detector.yml'
       - '.github/scripts/prepare-lm-detector.mjs'
       - 'internal/cli/bundled_lm_detector.go'
@@ -39,6 +46,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Test native Go SDK adapter on mocked Gateway
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags nogui -count=1 -v ./internal/lmdetector ./plugins/lm-detector
       - name: Test offline bundle registration and upgrades
         env:
           CGO_ENABLED: '0'
