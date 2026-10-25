@@ -232,3 +232,21 @@ func markBundled(marker string) error {
     // survives app upgrades and explicit removal from the plugin list.
     return os.WriteFile(marker, []byte("registered\n"), 0o600)
 }
+
+
+// BundledLMDetectorDataDir extracts the immutable embedded reference files
+// without registering or starting the legacy Bun plugin. The upstream Go SDK
+// reads its paired bank and detector files from this directory, with no network.
+func BundledLMDetectorDataDir() (string, error) {
+    for _, name := range []string{"data/unified_bank.json", "data/shared_detector.bin"} {
+        b, err := lmDetectorFiles.ReadFile("bundled-lm-detector/runtime/" + name)
+        if err != nil || len(b) < 1<<20 {
+            return "", fmt.Errorf("LM Detector was built without %s; run node .github/scripts/prepare-lm-detector.mjs before go build", name)
+        }
+    }
+    payload, err := fs.Sub(lmDetectorFiles, "bundled-lm-detector/runtime")
+    if err != nil { return "", err }
+    target, err := materializeLMDetector(payload, filepath.Join(settings.Dir(), "bundled", "lm-detector"))
+    if err != nil { return "", err }
+    return filepath.Join(target, "data"), nil
+}
