@@ -79,7 +79,9 @@ test("fork option follows backend state and posts correct boolean toggles", () =
   magpie.agentPrefs.render({ codexCallerPromptOn: false }, options);
   assert.equal(control.children[0].chosen, "off");
   control.children[0].pick("on");
-  assert.deepEqual(calls, [
+  // The UI handler runs inside a VM realm: normalize the payload's realm
+  // before comparing its value (objects from two realms have distinct prototypes).
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     { path: "settings/codex-caller-prompt", body: { on: false } },
     { path: "settings/codex-caller-prompt", body: { on: true } },
   ]);
