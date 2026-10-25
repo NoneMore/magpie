@@ -6,8 +6,19 @@ import (
  "net/http"
  "net/http/httptest"
  "reflect"
+ "io"
+ "fmt"
+ "strings"
+ "time"
+
+ "github.com/yetone/magpie/internal/testenv"
  "testing"
 )
+
+func TestMain(m *testing.M) {
+ testenv.Offline()
+ testenv.Main(m)
+}
 
 func TestOptionsRejectsGroupsAndBadBoundaries(t *testing.T) {
  cases:=[]struct{name string; options Options; wantErr bool}{
@@ -60,3 +71,60 @@ func TestNativeRoutesRejectWhenDisabled(t *testing.T) {
   }
  }
 }
+
+func TestNativeSamplingThroughGateway(t *testing.T) {
+ numbers:=strings.TrimSuffix(strings.Repeat("199, ",300),", ")
+ mock:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  switch {
+  case r.Method=="GET" && r.URL.Path=="/v1/models":
+   _=json.NewEncoder(w).Encode(map[string]any{"data":[]map[string]string{{"id":"test/fixture"}}})
+  case r.Method=="POST" && (r.URL.Path=="/v1/chat/completions"||r.URL.Path=="/v1/responses"):
+   body,err:=io.ReadAll(r.Body);if err!=nil{t.Error(err);return}
+   var request struct{Stream bool `json:"stream"`}
+   if err:=json.Unmarshal(body,&request);err!=nil{t.Error(err);return}
+   isChat:=r.URL.Path=="/v1/chat/completions"
+   if request.Stream {
+    w.Header().Set("Content-Type","text/event-stream")
+    if isChat {
+     fmt.Fprintf(w,"data: %s\\n\\n",mustJSON(map[string]any{"choices":[]any{map[string]any{"delta":map[string]string{"content":numbers},"finish_reason":nil}}}))
+     fmt.Fprint(w,"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\\n\\ndata: [DONE]\\n\\n")
+    } else {
+     fmt.Fprintf(w,"data: %s\\n\\n",mustJSON(map[string]any{"type":"response.output_text.delta","delta":numbers}))
+     fmt.Fprint(w,"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\\n\\n")
+    }
+   } else if isChat {
+    _=json.NewEncoder(w).Encode(map[string]any{"choices":[]any{map[string]any{"finish_reason":"stop","message":map[string]string{"content":numbers}}}})
+   } else {
+    _=json.NewEncoder(w).Encode(map[string]any{"status":"completed","output":[]any{map[string]any{"type":"message","content":[]any{map[string]string{"type":"output_text","text":numbers}}}}})
+   }
+  default:http.NotFound(w,r)
+  }
+ }))
+ defer mock.Close()
+ t.Setenv("MAGPIE_FPD_GATEWAY_URL",mock.URL+"/v1")
+ t.Setenv("MAGPIE_FPD_GATEWAY_KEY","test-key")
+ Enable()
+ defer Disable()
+ for _,format:=range []string{"chat","responses"} {
+  for _,stream:=range []bool{false,true} {
+   t.Run(fmt.Sprintf("%s/stream=%t",format,stream),func(t *testing.T){
+    start,err:=Start(context.Background(),Options{Model:"test/fixture",Format:format,Stream:stream,Count:1,Parallel:1,Repeat:1})
+    if err!=nil{t.Fatal(err)}
+    deadline:=time.Now().Add(10*time.Second)
+    for {
+     job,err:=Status(start.JobID)
+     if err!=nil{t.Fatal(err)}
+     if job.State!="running" {
+      if job.State!="done"||job.Completed!=1||len(job.Rounds)!=1||job.Rounds[0].Analysis==nil||job.Rounds[0].Analysis.Decision!="not_model" {
+       t.Fatalf("unexpected native detection: %+v",job)
+      }
+      return
+     }
+     if time.Now().After(deadline){t.Fatal("native detector job did not finish")}
+     time.Sleep(25*time.Millisecond)
+    }
+   })
+  }
+ }
+}
+func mustJSON(v any)string {b,_:=json.Marshal(v);return string(b)}
