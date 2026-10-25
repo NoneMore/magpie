@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -52,11 +53,27 @@ import (
 // the calls not run (喜欢一个人 on Discord, a relay in front of
 // deepseek-v4.1-flash), as the translations' collector already has it.
 //
+// And Gemini's OpenAI-compatible API sends its tool calls with no "index"
+// (Linka's frames in gemini_compat_cut_test.go), where the contract has
+// one on every fragment. The AI SDK's OpenAI provider, which Cursor's
+// Private Inference reads Chat with, turns such a chunk away ("expected
+// number, received undefined" at tool_calls[0].index), and the call is
+// never made (#3386). A fragment with none is given its call's: a new id,
+// or a later place in its delta, is the next call.
+//
+// And a usage that tells the cache only in another vendor's names
+// (Anthropic's cache_read_input_tokens from a relay in front of a model,
+// DeepSeek's prompt_cache_hit_tokens or Moonshot's cached_tokens beside a
+// 0 in prompt_tokens_details) is told in OpenAI's too (openAIUsage): the
+// gateway counted the hit, but an agent on pi-ai (DeepSeek Harness), which
+// reads prompt_tokens_details.cached_tokens first, showed none.
+//
 // Lines pass whole, as they came, unless one has any of them.
 type chatTidy struct {
-	buf    []byte
-	ids    streamCallIDs
-	called map[int]bool // the choices that made a call
+	buf     []byte
+	ids     streamCallIDs
+	indexes streamCallIndexes
+	called  map[int]bool // the choices that made a call
 }
 
 var (
@@ -118,9 +135,84 @@ func needsTidy(line []byte) bool {
 		bytes.Contains(line, toolCallsField)
 }
 
-// needs is needsTidy, and a finish_reason once a choice made a call.
+// needs is needsTidy, a finish_reason once a choice made a call, and a
+// usage that may tell its cache in names OpenAI's clients don't read.
 func (t *chatTidy) needs(b []byte) bool {
-	return needsTidy(b) || len(t.called) > 0 && bytes.Contains(b, finishReasonField)
+	return needsTidy(b) || len(t.called) > 0 && bytes.Contains(b, finishReasonField) || mayMendUsage(b)
+}
+
+var (
+	usageField        = []byte(`"usage"`)
+	cachedTokensField = []byte(`"cached_tokens"`)
+	// the names other than OpenAI's that cUsage reads a cache in
+	otherCacheFields = [][]byte{[]byte(`"prompt_cache_hit_tokens"`),
+		[]byte(`"cache_read_input_tokens"`), []byte(`"cache_creation_input_tokens"`)}
+)
+
+// mayMendUsage reports whether b has a usage that may tell its cache in
+// names other than OpenAI's, which openAIUsage may have to tell again:
+// DeepSeek's or Anthropic's, or Moonshot's top-level cached_tokens beside
+// prompt_tokens_details' own. A usage in OpenAI's names alone, every
+// OpenAI reply, is left unread.
+func mayMendUsage(b []byte) bool {
+	if !bytes.Contains(b, usageField) {
+		return false
+	}
+	for _, f := range otherCacheFields {
+		if bytes.Contains(b, f) {
+			return true
+		}
+	}
+	return bytes.Count(b, cachedTokensField) > 1
+}
+
+// openAIUsage is a Chat usage whose cache cUsage reads in names other than
+// OpenAI's (Anthropic's from a relay, DeepSeek's prompt_cache_hit_tokens,
+// Moonshot's cached_tokens), told in OpenAI's as well: what was read in
+// prompt_tokens_details.cached_tokens, what was written in its
+// cache_write_tokens (OpenRouter's), and prompt_tokens counting both, as
+// OpenAI's does. An agent reads prompt_tokens_details first, pi-ai (DeepSeek
+// Harness) even a 0 there over DeepSeek's hit, and the AI SDK nothing else.
+// Every field the upstream sent stays; a usage that already says it in
+// OpenAI's names, or tells no cache, comes back as it was, and so does one
+// that isn't an object.
+func openAIUsage(raw json.RawMessage) (json.RawMessage, bool) {
+	var cu cUsage
+	if decodeJSON(raw, &cu) != nil {
+		return raw, false
+	}
+	u := cu.usage()
+	if u.CacheRead == 0 && u.CacheWrite == 0 {
+		return raw, false
+	}
+	in := u.prompt()
+	if d := cu.PromptTokensDetails; d != nil && d.CachedTokens == u.CacheRead && d.CacheWriteTokens == u.CacheWrite && cu.PromptTokens == in {
+		return raw, false
+	}
+	var m map[string]json.RawMessage
+	if decodeJSON(raw, &m) != nil || m == nil {
+		return raw, false
+	}
+	var details map[string]json.RawMessage
+	if decodeJSON(m["prompt_tokens_details"], &details) != nil || details == nil {
+		details = map[string]json.RawMessage{}
+	}
+	details["cached_tokens"], _ = marshalPlain(u.CacheRead)
+	if _, had := details["cache_write_tokens"]; had || u.CacheWrite > 0 {
+		details["cache_write_tokens"], _ = marshalPlain(u.CacheWrite)
+	}
+	m["prompt_tokens_details"], _ = marshalPlain(details)
+	if cu.PromptTokens != in {
+		m["prompt_tokens"], _ = marshalPlain(in)
+		if _, had := m["total_tokens"]; had {
+			m["total_tokens"], _ = marshalPlain(cu.TotalTokens + in - cu.PromptTokens)
+		}
+	}
+	out, err := marshalPlain(m)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
 }
 
 var finishReasonField = []byte(`"finish_reason"`)
@@ -139,12 +231,19 @@ func (t *chatTidy) line(line []byte) []byte {
 		return line
 	}
 	var chunk map[string]json.RawMessage
-	if decodeJSON(data, &chunk) != nil {
+	if decodeJSON(data, &chunk) != nil || chunk == nil {
 		return line
+	}
+	usageMended := false
+	if raw, ok := chunk["usage"]; ok {
+		chunk["usage"], usageMended = openAIUsage(raw)
 	}
 	var choices []map[string]json.RawMessage
 	if decodeJSON(chunk["choices"], &choices) != nil {
-		return line
+		choices = nil
+		if !usageMended {
+			return line
+		}
 	}
 	changed := false
 	for k, c := range choices {
@@ -167,6 +266,13 @@ func (t *chatTidy) line(line []byte) []byte {
 			delete(delta, "tool_calls")
 			inDelta = true
 		} else if ok {
+			if t.indexes == nil {
+				t.indexes = streamCallIndexes{}
+			}
+			if given, chg := t.indexes.give(choice, calls); chg {
+				calls, delta["tool_calls"] = given, given
+				inDelta = true
+			}
 			if t.ids == nil {
 				t.ids = streamCallIDs{}
 			}
@@ -192,10 +298,12 @@ func (t *chatTidy) line(line []byte) []byte {
 			changed = true
 		}
 	}
-	if !changed {
+	if !changed && !usageMended {
 		return line
 	}
-	chunk["choices"], _ = json.Marshal(choices)
+	if changed {
+		chunk["choices"], _ = json.Marshal(choices)
+	}
 	nb, err := json.Marshal(chunk)
 	if err != nil {
 		return line
@@ -223,6 +331,64 @@ func withoutEmptyNames(raw json.RawMessage) (json.RawMessage, bool) {
 		}
 		delete(fn, "name")
 		call["function"], _ = json.Marshal(fn)
+		changed = true
+	}
+	if !changed {
+		return raw, false
+	}
+	out, err := json.Marshal(calls)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
+}
+
+// streamCallIndexes is what chatTidy keeps to give a streamed tool call
+// the upstream sent no index for one: each choice's open call.
+type streamCallIndexes map[int]*openCall
+
+// openCall is a choice's open tool call: its id, the index it goes by,
+// and the next index to give.
+type openCall struct {
+	open        bool
+	id          string
+	index, next int
+}
+
+// give gives each fragment of a delta's tool_calls with no index (none,
+// or null) the index of the call it belongs to, and reports whether it
+// gave any. A fragment with an id other than the open call's, or after
+// the first in its delta, starts the next call, as chatDecoder reads a
+// call with a new id; any other goes on with the open one. So two calls
+// in chunks of their own are 0 and 1: given both 0, by their place, OpenAI's
+// node SDK merged them into one call. A fragment with an index keeps it,
+// and the next one given comes after it.
+func (s streamCallIndexes) give(choice int, raw json.RawMessage) (json.RawMessage, bool) {
+	var calls []map[string]json.RawMessage
+	if decodeJSON(raw, &calls) != nil {
+		return raw, false
+	}
+	o := s[choice]
+	if o == nil {
+		o = &openCall{}
+		s[choice] = o
+	}
+	changed := false
+	for k, c := range calls {
+		id := callID(c["id"])
+		if v, ok := c["index"]; ok && string(v) != "null" {
+			var n int
+			if decodeJSON(v, &n) == nil {
+				o.open, o.id, o.index = true, cmp.Or(id, o.id), n
+				o.next = max(o.next, n+1)
+			}
+			continue
+		}
+		if !o.open || k > 0 || id != "" && id != o.id {
+			o.open, o.id, o.index = true, id, o.next
+			o.next++
+		}
+		c["index"], _ = marshalPlain(o.index)
 		changed = true
 	}
 	if !changed {
@@ -303,8 +469,9 @@ func flattenContent(m map[string]json.RawMessage, whole bool) bool {
 // when the request offered tools (names), calls the model wrote into its
 // text are made the calls they are, as textCallTidy makes them in a
 // stream (#1845), and a call the upstream gave no id is given one, as
-// chatTidy gives it in a stream (#2611). It is held until it ends; any
-// other reply passes byte for byte.
+// chatTidy gives it in a stream (#2611), and a usage that tells its cache
+// in other names is told in OpenAI's too (openAIUsage). It is held until it
+// ends; any other reply passes byte for byte.
 type chatWhole struct {
 	names map[string]bool
 	buf   []byte
@@ -319,16 +486,23 @@ func (t *chatWhole) flush() []byte {
 	b := t.buf
 	t.buf = nil
 	parts := bytes.Contains(b, contentParts) || bytes.Contains(b, contentPartsSpace)
-	if !parts && !mayWriteCalls(b, t.names) && !bytes.Contains(b, toolCallsField) {
+	if !parts && !mayWriteCalls(b, t.names) && !bytes.Contains(b, toolCallsField) && !mayMendUsage(b) {
 		return b
 	}
 	var reply map[string]json.RawMessage
-	if decodeJSON(b, &reply) != nil {
+	if decodeJSON(b, &reply) != nil || reply == nil {
 		return b
+	}
+	usageMended := false
+	if raw, ok := reply["usage"]; ok {
+		reply["usage"], usageMended = openAIUsage(raw)
 	}
 	var choices []map[string]json.RawMessage
 	if decodeJSON(reply["choices"], &choices) != nil {
-		return b
+		choices = nil
+		if !usageMended {
+			return b
+		}
 	}
 	changed := false
 	for _, c := range choices {
@@ -357,10 +531,12 @@ func (t *chatWhole) flush() []byte {
 		c["message"], _ = marshalPlain(msg)
 		changed = true
 	}
-	if !changed {
+	if !changed && !usageMended {
 		return b
 	}
-	reply["choices"], _ = marshalPlain(choices)
+	if changed {
+		reply["choices"], _ = marshalPlain(choices)
+	}
 	nb, err := marshalPlain(reply)
 	if err != nil {
 		return b

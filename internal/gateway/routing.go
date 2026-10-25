@@ -434,10 +434,11 @@ func failureOf(c candidate, status int, body []byte) string {
 // restrictedSaid says an error is one magpie already put in words as an
 // account its vendor restricted: WorkBuddy's 11140 as the built-in
 // translates it, or as the plugin does, both ending in
-// provider.WBRestrictedHint. magpie's own words, which no vendor says, so
-// they are read whoever answered.
+// provider.WBRestrictedHint, and ZCode's Start Plan 3012 as the ZCode
+// plugin puts it (provider.ZCodeRestrictedHint, plugins#348). magpie's own
+// words, which no vendor says, so they are read whoever answered.
 func restrictedSaid(status int, body []byte) bool {
-	return status >= 400 && bytes.Contains(body, []byte(provider.WBRestrictedHint))
+	return status >= 400 && (bytes.Contains(body, []byte(provider.WBRestrictedHint)) || bytes.Contains(body, []byte(provider.ZCodeRestrictedHint)))
 }
 
 // restrictedRefused says p's vendor restricted the account: magpie's words
@@ -509,6 +510,28 @@ type Rest struct {
 	agent, user string
 	said        string    // the error it gave, for a failVerify held
 	hold        time.Time // until when a failVerify is answered without asking
+	// a key out of its allowance or credit for as long as magpie guessed,
+	// the vendor and the user naming no time, is held (quotaHeld) once it
+	// was refused so twice in a row, not on the first refusal (first),
+	// and asked again from askAt, a minute on: zoecats on Discord, a local
+	// aggregator's "quota exhausted" for the moment it switched upstreams
+	// held every request for 15 minutes or more
+	first bool
+	askAt time.Time
+}
+
+// asksAt is when r, a key's rest out of its allowance or credit, has it
+// asked again: at once after its first refusal, a minute on when magpie
+// guessed how long it is out, else when it is back. Any other rest asks
+// when it ends.
+func (r Rest) asksAt(now time.Time) time.Time {
+	switch {
+	case r.first:
+		return now
+	case !r.askAt.IsZero() && r.askAt.Before(r.Until):
+		return r.askAt
+	}
+	return r.Until
 }
 
 // renewed lifts the rests of a subscription account whose windows were
@@ -522,10 +545,12 @@ type Rest struct {
 func renewed(agent, user string) {
 	restingUntil.Lock()
 	defer restingUntil.Unlock()
+	now := time.Now()
 	for k, r := range restingUntil.note {
 		if r.agent == agent && strings.EqualFold(r.user, user) && (r.Why == failQuota || r.By == "window") {
 			delete(restingUntil.m, k)
 			delete(restingUntil.note, k)
+			liftedLocked(k, now)
 		}
 	}
 }
@@ -534,6 +559,9 @@ func init() { provider.OnRenewed(renewed) }
 
 // staleAllowance is provider.StaleAllowance, swapped in tests.
 var staleAllowance = provider.StaleAllowance
+
+// codexMayBeUsedUp is provider.CodexMayBeUsedUp, swapped in tests.
+var codexMayBeUsedUp = provider.CodexMayBeUsedUp
 
 // awaitAllowance is provider.AwaitAllowance, swapped in tests.
 var awaitAllowance = provider.AwaitAllowance
@@ -586,14 +614,19 @@ var (
 func RestOf(key string) (Rest, bool) { return restOf(key) }
 
 // Unrest lifts the rest of what rests by key — an account just verified
-// with its vendor, say — so the next request asks it again. False when it
-// wasn't resting.
+// with its vendor, say — so the next request asks it again: rate limited
+// with Sink on, it is no longer sent to the back of the order either.
+// The lift is told to the Routing page (TraceState.Lifted), wherever it
+// was asked for. False when it wasn't resting.
 func (s *Server) Unrest(key string) bool {
 	restingUntil.Lock()
-	defer restingUntil.Unlock()
 	_, ok := restingUntil.m[key]
 	delete(restingUntil.m, key)
 	delete(restingUntil.note, key)
+	liftedLocked(key, time.Now())
+	restingUntil.Unlock()
+	unsink(key)
+	s.trace.lifted()
 	return ok
 }
 
@@ -602,15 +635,19 @@ func (s *Server) Unrest(key string) bool {
 // asked again for all of them. It returns how many it lifted.
 func (s *Server) UnrestAll(key string) int {
 	restingUntil.Lock()
-	defer restingUntil.Unlock()
-	n := 0
+	n, now := 0, time.Now()
 	for k := range restingUntil.m {
 		if k == key || strings.HasPrefix(k, key+"/") {
 			delete(restingUntil.m, k)
 			delete(restingUntil.note, k)
+			liftedLocked(k, now)
 			n++
 		}
 	}
+	liftedLocked(key, now)
+	restingUntil.Unlock()
+	unsink(key)
+	s.trace.lifted()
 	return n
 }
 
@@ -749,10 +786,29 @@ func resetsZhipu(body []byte, now time.Time) time.Duration {
 // them, each a number and its unit, and nothing else between.
 var resetsInWords = regexp.MustCompile(`(?i)\bresets? in (?:(\d+)\s*d(?:ays?)?\b\s*)?(?:(\d+)\s*h(?:ours?|rs?)?\b\s*)?(?:(\d+)\s*m(?:in(?:utes?|s)?)?\b)?`)
 
-// resetsAfter is how long the refusal says until it is back (resetsInWords),
-// held to longestWritten. Zero when it doesn't say.
+// quotaResetAfter: Antigravity's (Google Code Assist's) 429 for a model's
+// allowance used up, which writes how long until it is back as Go prints
+// a duration: "You have exhausted your capacity on this model. Your quota
+// will reset after 3h19m30s." Unread, the account rested the quarter of
+// an hour of a quota that says nothing, and the account first in order
+// was asked again, and refused, every 15 minutes for the hours or days
+// its quota was out (Dani Ariyanto on Discord, 10-24).
+var quotaResetAfter = regexp.MustCompile(`(?i)\bquota will reset after ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)`)
+
+// resetsAfter is how long the refusal says until it is back
+// (resetsInWords, quotaResetAfter), held to longestWritten. Zero when it
+// doesn't say.
 func resetsAfter(body []byte) time.Duration {
-	return spanWritten(resetsInWords.FindSubmatch(wordsOf(body)))
+	body = wordsOf(body)
+	if d := spanWritten(resetsInWords.FindSubmatch(body)); d > 0 {
+		return d
+	}
+	if m := quotaResetAfter.FindSubmatch(body); m != nil && len(m[1]) > 0 {
+		if d, err := time.ParseDuration(string(m[1])); err == nil && d > 0 && d <= longestWritten {
+			return d
+		}
+	}
+	return 0
 }
 
 // clineModelLimited says c, a provider whose requests reach Cline's API,
@@ -889,10 +945,23 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// (#1235): the key's other models are still served
 	unserved := why == failOther && (modelRefused(status, body) || codeAssistModelMissing(c.p, status, body))
 	r := Rest{Why: why, Status: status, By: "cooldown"}
+	// out of allowance or credit for as long as magpie guessed: the vendor
+	// named no time, nor did the user (asksAt)
+	guessed := false
 	// a failure counted past the account's, for its model alone (below)
 	modelBackoff := false
 	if why == failProxy {
 		// the account is as good as it was; the proxy is the user's to start
+		return r
+	}
+	if c.p.LimitRestOff && (why == failQuota || why == failCredit || why == failRate || status == http.StatusTooManyRequests) {
+		// the user set it never to rest for a limit (provider.LimitRestOff;
+		// zoecats on Discord: a local aggregator says "quota exhausted"
+		// for the moment it switches upstreams, and the next request goes
+		// through): not set aside, sunk or counted, and asked as ever. A
+		// key refused, a model not served or a plain failure rests it as
+		// before
+		r.By, r.Until = "off", now
 		return r
 	}
 	if why == failCredit || why == failQuota {
@@ -901,7 +970,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	}
 	switch why {
 	case failCredit:
-		d, r.By = creditRest, "credit"
+		d, r.By, guessed = creditRest, "credit", true
 	case failQuota:
 		if c.onCredits() {
 			// a Codex account that holds credits refused as out of its
@@ -949,6 +1018,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		}
 		// a month's allowance whose refusal named its reset is out till
 		// then, past the week's cap (#3276); nothing else is held longer
+		guessed = r.By == "quota" && own <= 0
 		longest := longestQuota
 		if r.By == "resets" && monthlyWords.Match(wordsOf(body)) {
 			longest = longestMonthly
@@ -1023,6 +1093,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// by the plugin's provider ("plugin:grok"), not by "plugin"
 	if a := c.p.Account; a != nil && why != failOther && why != failVerify && why != failRestricted {
 		staleAllowance(a.UsageAgent(), a.User) // ask again what it has left
+		if why == failQuota && a.UsageAgent() == "codex" {
+			// the account Codex is signed in to may be out: the Codex app
+			// greys its Send till it knows magpie is its provider
+			codexMayBeUsedUp(a.User)
+		}
 	} else if a == nil && why != failOther && why != failVerify && why != failRestricted {
 		staleKeyAllowance(c.p) // a key that reads its windows, too
 	}
@@ -1069,6 +1144,17 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		r.Model = c.model
 	}
 	restingUntil.Lock()
+	if why == failQuota || why == failCredit {
+		// out for as long as magpie guessed: refused so the time before
+		// too, it is held from now on, and asked again a minute on; a
+		// refusal on its own is asked once more. A time the vendor named,
+		// or the user set, holds it from the first
+		if guessed {
+			prev, had := restingUntil.note[id]
+			r.first = !had || prev.Why != failQuota && prev.Why != failCredit
+			r.askAt = now.Add(fallbackCooldown)
+		}
+	}
 	restingUntil.m[id] = r.Until
 	restingUntil.note[id] = r
 	restingUntil.Unlock()

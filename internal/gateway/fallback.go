@@ -914,22 +914,32 @@ func restingOf(c candidate) (Rest, bool) {
 // quotaHeld is, when every candidate of cs is a key resting out of its
 // allowance or its credit — refused with a 429 or a 402 for it, the
 // vendor's words kept — the rest of the first, and when the first of them
-// is back: asked before then, each would be refused the same (#1772). A
+// is asked again: asked before then, each would be refused the same
+// (#1772). A key whose rest magpie guessed the length of, the vendor and
+// the user naming no time, is asked again all the same after its first
+// refusal, and a minute on after the next (Rest.asksAt): zoecats on Discord, a local aggregator said "quota
+// exhausted" for the moment it switched upstreams, and every request,
+// the agent's retry first, was answered from its 15-minute rest. A
 // subscription account isn't held so: its resets may be spent for it
 // (autoReset), and its windows are read again as it is planned.
 func quotaHeld(cs []candidate) (Rest, time.Time, bool) {
 	var first Rest
 	var back time.Time
+	now := time.Now()
 	for i, c := range cs {
 		r, ok := restingOf(c)
 		if !ok || c.p.Account != nil || r.Why != failQuota && r.Why != failCredit || !quotaStatus(r.Status) || r.said == "" {
 			return Rest{}, time.Time{}, false
 		}
+		at := r.asksAt(now)
+		if !now.Before(at) {
+			return Rest{}, time.Time{}, false
+		}
 		if i == 0 {
 			first = r
 		}
-		if back.IsZero() || r.Until.Before(back) {
-			back = r.Until
+		if back.IsZero() || at.Before(back) {
+			back = at
 		}
 	}
 	return first, back, len(cs) > 0
@@ -940,17 +950,18 @@ func quotaStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusPaymentRequired
 }
 
-// soonestBack is when the first of cs is back from its rest; false when
-// one of them isn't resting.
+// soonestBack is when the first of cs is back from its rest, or asked
+// again before it is (Rest.asksAt); false when one of them isn't resting.
 func soonestBack(cs []candidate) (time.Time, bool) {
 	var back time.Time
+	now := time.Now()
 	for _, c := range cs {
 		r, ok := restingOf(c)
 		if !ok {
 			return time.Time{}, false
 		}
-		if back.IsZero() || r.Until.Before(back) {
-			back = r.Until
+		if at := r.asksAt(now); back.IsZero() || at.Before(back) {
+			back = at
 		}
 	}
 	return back, !back.IsZero()
@@ -1011,7 +1022,40 @@ var restingUntil = struct {
 	sync.Mutex
 	m    map[string]time.Time
 	note map[string]Rest // why each rests
-}{m: map[string]time.Time{}, note: map[string]Rest{}}
+	// lifted is when each rest was lifted before its time — by hand
+	// (Unrest), or its windows renewed — by the key it rested by: the
+	// kept routes still say it rested, and the Routing page reads this
+	// (TraceState.Lifted) to stop showing a rest lifted since it was
+	// found, from whichever page lifted it (zoecats on Discord: Try now
+	// in the provider's editor left Routing at 429 until a restart)
+	lifted map[string]time.Time
+}{m: map[string]time.Time{}, note: map[string]Rest{}, lifted: map[string]time.Time{}}
+
+// liftedLocked notes that the rest by key was lifted now, with
+// restingUntil held. A lift older than any rest can be is let go.
+func liftedLocked(key string, now time.Time) {
+	for k, at := range restingUntil.lifted {
+		if now.Sub(at) > longestMonthly {
+			delete(restingUntil.lifted, k)
+		}
+	}
+	restingUntil.lifted[key] = now
+}
+
+// liftedRests is when each rest lifted before its time was lifted, by
+// the key it rested by.
+func liftedRests() map[string]time.Time {
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	if len(restingUntil.lifted) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Time, len(restingUntil.lifted))
+	for k, at := range restingUntil.lifted {
+		out[k] = at
+	}
+	return out
+}
 
 func (s *Server) resting(id string) bool {
 	_, ok := restOf(id)
@@ -3313,4 +3357,52 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 		msg += "; its accounts are " + strings.Join(have, ", ")
 	}
 	return nil, pl, http.StatusNotFound, msg
+}
+
+// unservedTry says c's try failed as the vendor refusing the model as one
+// it doesn't serve the account or key (modelRefused, codeAssistModelMissing):
+// what restAfterMarked rests for that model alone.
+func unservedTry(c candidate, status int, body []byte) bool {
+	return failure(status, body) == failOther && (modelRefused(status, body) || codeAssistModelMissing(c.p, status, body))
+}
+
+// unlistedNext takes out of a plan's unlisted accounts (planned.unlisted,
+// their rows in ws) those of key, "<provider>/<model>", not resting for the
+// model: the next ones asked once the accounts whose own list has the model
+// refused it as one they don't serve. The rest are returned too, for
+// none to be asked twice.
+func unlistedNext(cs []candidate, ws []Weighed, key string) (next []candidate, nextW []Weighed, restCs []candidate, restWs []Weighed) {
+	for i, c := range cs {
+		_, resting := restingOf(c)
+		if c.p.ID+"/"+c.model != key || resting {
+			restCs = append(restCs, c)
+			if i < len(ws) {
+				restWs = append(restWs, ws[i])
+			}
+			continue
+		}
+		next = append(next, c)
+		if i < len(ws) {
+			w := ws[i]
+			w.Unlisted = false // asked, after those that list the model
+			nextW = append(nextW, w)
+		}
+	}
+	return next, nextW, restCs, restWs
+}
+
+// askUnlisted moves the rows of the unlisted accounts asked next (ws) from
+// a route's left to its order, after the row of c, the one that refused
+// the model: the Routing page has them asked, not "unlisted, skipped".
+func askUnlisted(order, left []Weighed, c candidate, ws []Weighed) ([]Weighed, []Weighed) {
+	asked := make(map[string]bool, len(ws))
+	for _, w := range ws {
+		asked[w.ID+"/"+w.Model] = true
+	}
+	left = slices.DeleteFunc(slices.Clone(left), func(w Weighed) bool { return w.Unlisted && asked[w.ID+"/"+w.Model] })
+	at := slices.IndexFunc(order, func(w Weighed) bool { return w.ID == c.rest && w.Model == c.model })
+	if at < 0 {
+		return append(slices.Clip(order), ws...), left
+	}
+	return slices.Concat(order[:at+1], ws, order[at+1:]), left
 }
