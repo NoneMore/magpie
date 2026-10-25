@@ -5,6 +5,11 @@ on:
   schedule:
     - cron: '17 2 * * *' # 02:17 UTC, once daily
   workflow_dispatch:
+  push:
+    # Updating this policy starts Sync once; regular fork commits do not.
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-upstream.yml'
 
 permissions:
   contents: write
@@ -25,6 +30,11 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Set up Node.js for safe merge
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Merge upstream into fork
         id: merge
         shell: bash
@@ -42,9 +52,8 @@ jobs:
             exit 0
           fi
 
-          # Only the upstream-owned script-size *policy test* can be resolved
-          # automatically. It is not a correctness/regression test. All other
-          # conflicts, including code and other tests, still stop the merge.
+          # Resolve only allowlisted, strictly verified conflicts; never silently
+          # discard fork behavior. Other conflicts still stop before testing/push.
           if git merge --no-edit upstream/main; then
             echo "Upstream merged without conflicts."
           else
@@ -54,6 +63,32 @@ jobs:
               echo "::notice::Resolving upstream-owned core JS size budget policy from upstream."
               git checkout --theirs -- internal/gui/core_budget_test.go
               git add -- internal/gui/core_budget_test.go
+              GIT_EDITOR=true git merge --continue
+            elif [[ ${#conflicts[@]} -eq 1 &&
+                    "${conflicts[0]}" == "internal/gui/assets/app.js" ]]; then
+              # Resolve only this verified Caller Prompt vs Subagent Model row conflict.
+              # Any unexpected change to either side will stop without pushing.
+              node <<'NODE'
+          const fs = require('node:fs');
+          const file = 'internal/gui/assets/app.js';
+          const source = fs.readFileSync(file, 'utf8');
+          const pattern = /^<<<<<<<[^\r\n]*\r?\n([\s\S]*?)^=======\r?\n([\s\S]*?)^>>>>>>>[^\r\n]*(?:\r?\n|$)/gm;
+          const blocks = [...source.matchAll(pattern)];
+          const ourLine = '  codex: ["codexCallerPromptRow", "codexAgentsV1Row", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],';
+          const theirLine = '  codex: ["codexAgentsV1Row", "codexSubagentModelRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],';
+          const normalize = s => s.replace(/\r/g, '').trim();
+          if (blocks.length !== 1 || normalize(blocks[0][1]) !== normalize(ourLine)
+              || normalize(blocks[0][2]) !== normalize(theirLine)) {
+            throw Error('Unexpected app.js conflict; refusing unsafe resolution');
+          }
+          const resolved = ourLine.replace('"codexAgentsV1Row"', '"codexAgentsV1Row", "codexSubagentModelRow"');
+          const result = source.replace(blocks[0][0], resolved + '\n');
+          if (/^(<<<<<<<|=======|>>>>>>>)/m.test(result)) throw Error('Unresolved merge markers');
+          fs.writeFileSync(file, result);
+          console.log('Resolved known AGENT_PREFS.codex row, preserving both features');
+          NODE
+              node --check internal/gui/assets/app.js
+              git add -- internal/gui/assets/app.js
               GIT_EDITOR=true git merge --continue
             else
               printf 'Unsafe merge conflicts; no push: %s\\n' "${conflicts[*]}" >&2
@@ -68,12 +103,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Set up Node.js
-        if: steps.merge.outputs.changed == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: Set up Bun
         if: steps.merge.outputs.changed == 'true'
