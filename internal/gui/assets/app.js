@@ -20878,10 +20878,10 @@ function renderAlerts(s, keep) {
 // in Settings, apart from the agents they set (the owner, 10-20); Long
 // conversations is Codex's and Claude Code's both, in each one's sheet.
 const AGENT_PREFS = {
-  codex: ["codexCallerPromptRow", "codexAgentsV1Row", "codexSubagentModelRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
+  codex: ["codexAgentsV1Row", "codexSubagentModelRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
   claude: ["fullContextRow"],
 };
-const agentPrefsOf = (a) => gatewayMode ? null : AGENT_PREFS[a.id.split("@wsl:")[0]];
+const agentPrefsOf = (a) => gatewayMode ? null : magpie.agentPrefs.rows(a.id.split("@wsl:")[0], AGENT_PREFS[a.id.split("@wsl:")[0]]);
 const PREFS_GLYPH = "M2.75 4.75h10.5M2.75 11.25h10.5M5.75 3.25v3M10.25 9.75v3";
 let agentPrefRowEls = null;
 // homeAgentPrefRows puts back the rows a sheet took with it when another
@@ -20928,10 +20928,13 @@ function renderAgentPrefs() {
   const s = prefs;
   if (!s) return;
   homeAgentPrefRows();
-  // Explicit personal-fork policy. Saving either On or Off overrides the
-  // legacy environment fallback without restarting the gateway.
-  $("#codexCallerPromptSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.codexCallerPromptOn ? "on" : "off", (v) =>
-    writingPrefs(api("settings/codex-caller-prompt", { on: v === "on" })).then((ns) => { prefs = ns; renderSettings(); }).catch((e) => { status(t(e.message), "err"); renderSettings(); })));
+  // Trusted agent preferences are contributed by separate client scripts.
+  magpie.agentPrefs.render(s, {
+    segmented: segs, translate: t,
+    save: (path, body) => writingPrefs(api(path, body))
+      .then((ns) => { prefs = ns; renderSettings(); })
+      .catch((e) => { status(t(e.message), "err"); renderSettings(); }),
+  });
   // Codex's own models in multi-agent V1 (their subagents' tasks go as text),
   // so a GPT lead can run a subagent on magpie's other models (#141). Where
   // Codex's own multi_agent_v2 is on in the config magpie routes it wins, and

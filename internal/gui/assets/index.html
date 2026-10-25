@@ -435,10 +435,6 @@
 
 <!-- an agent's own settings, drawn here and shown in its sheet or opened row (AGENT_PREFS) -->
 <div id="agentPrefRows" hidden>
-  <div class="row pref" id="codexCallerPromptRow">
-    <div class="who"><div class="name" data-t>Caller-owned Codex instructions (experimental)</div><div class="sub" data-t>Use the client's top-level instructions instead of Codex's native prompt on ChatGPT subscription requests. Unsupported upstream; may be refused or risk your account. Avoid switching mid-conversation.</div></div>
-    <div id="codexCallerPromptSegs"></div>
-  </div>
   <div class="row pref" id="codexAgentsV1Row">
     <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>A GPT lead spawns subagents on magpie’s other models. New threads only; Codex’s own multi_agent_v2 still wins</div><div class="sub err" id="codexAgentsV1Warn" hidden></div></div>
     <div id="codexAgentsV1Segs"></div>
@@ -478,6 +474,8 @@
 </div>
 <script src="i18n.js"></script>
 <script src="kernel.js"></script>
+<!-- Trusted personal-fork agent preference extension (before app.js). -->
+<script src="fork/codex-caller-prompt.js"></script>
 <!-- the built-in plugins' own scripts (pluginrt.Manifest.Client) -->
 <script src="plugins/gateway/keys.js"></script>
 <script src="plugins/gateway/client.js"></script>

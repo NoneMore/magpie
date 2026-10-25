@@ -223,8 +223,70 @@
     },
   };
 
+  // Trusted client scripts may contribute simple agent preferences without
+  // editing app.js's upstream-owned AGENT_PREFS list or renderAgentPrefs.
+  // Community plugin pages remain in sandboxed iframes and cannot access this.
+  const agentPrefs = new Map();
+  const agentPrefsAPI = {
+    register(agent, spec) {
+      if (started) throw new Error("agent preference registered after start");
+      if (!/^[a-z][a-z0-9-]*$/.test(agent) ||
+          !/^[a-z][a-zA-Z0-9]*$/.test(spec?.id || "") ||
+          !/^[a-z][a-zA-Z0-9]*$/.test(spec?.setting || "") ||
+          !/^[a-z][a-zA-Z0-9]*$/.test(spec?.controlId || "") ||
+          !/^settings\/[a-z0-9/-]+$/.test(spec?.endpoint || "")) {
+        throw new Error("invalid agent preference");
+      }
+      const host = document.getElementById("agentPrefRows");
+      if (!host || document.getElementById(spec.id) || document.getElementById(spec.controlId)) {
+        throw new Error("agent preference row is missing or duplicated");
+      }
+      const row = document.createElement("div");
+      row.className = "row pref";
+      row.id = spec.id;
+      const who = document.createElement("div");
+      who.className = "who";
+      for (const [cls, content] of [["name", spec.title], ["sub", spec.description]]) {
+        const node = document.createElement("div");
+        node.className = cls;
+        node.dataset.t = "";
+        node.textContent = content;
+        who.append(node);
+      }
+      const control = document.createElement("div");
+      control.id = spec.controlId;
+      row.append(who, control);
+      const before = document.getElementById(spec.before);
+      if (before?.parentElement === host) host.insertBefore(row, before);
+      else host.append(row);
+      const list = agentPrefs.get(agent) || [];
+      list.push({ ...spec, control });
+      agentPrefs.set(agent, list);
+    },
+    rows(agent, core) {
+      const contributed = agentPrefs.get(agent) || [];
+      if (!core && !contributed.length) return null;
+      const ids = [...(core || [])];
+      for (const entry of contributed) {
+        const at = ids.indexOf(entry.before);
+        ids.splice(at < 0 ? ids.length : at, 0, entry.id);
+      }
+      return ids;
+    },
+    render(settings, { segmented, translate, save }) {
+      for (const rows of agentPrefs.values()) for (const p of rows) {
+        p.control.replaceChildren(segmented(
+          [["off", translate("Off")], ["on", translate("On")]],
+          settings[p.setting] ? "on" : "off",
+          (v) => save(p.endpoint, { on: v === "on" })
+        ));
+      }
+    },
+  };
+
   window.magpie = {
     ui,
+    agentPrefs: agentPrefsAPI,
     plugin(id, setup) {
       if (plugins.has(id)) throw new Error(`plugin ${id} is registered twice`);
       const p = { id, config: { ...(window.bootPrefs?.pluginConfig?.[id] || {}) }, onConfig: [], disposers: [] };

@@ -28,6 +28,10 @@ if ($LASTEXITCODE -ne 0) { throw 'GUI / Page bridge regression failed' }
 go test -count=1 -timeout 5m ./internal/pluginrt -run '^(TestReconcile|TestCompatible|TestPluginsImportOnlyCore)$'
 if ($LASTEXITCODE -ne 0) { throw 'Plugin runtime regression failed' }
 
+Write-Host '=== Fork agent preference registration contract (no browser needed) ==='
+node --test internal/gui/tests/fork-agent-prefs.test.cjs
+if ($LASTEXITCODE -ne 0) { throw 'Fork agent preference registration failed' }
+
 Write-Host '=== Upstream-maintained Windows native regression cases ==='
 bun --version
 if ($LASTEXITCODE -ne 0) { throw 'Bun unavailable' }
@@ -51,6 +55,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows x64 desktop compile failed' }
 Write-Host '=== Validate key GUI and LM Detector JavaScript syntax ==='
 foreach ($asset in @(
   'internal/gui/assets/app.js',
+  'internal/gui/assets/kernel.js',
+  'internal/gui/assets/fork/codex-caller-prompt.js',
   'internal/gui/assets/plugins.js',
   'internal/gui/assets/pluginpages.js',
   'internal/gui/pagebridge.js',
