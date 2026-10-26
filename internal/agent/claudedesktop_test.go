@@ -845,3 +845,112 @@ func TestClaudeDesktopOffersItsSessionImport(t *testing.T) {
 		t.Fatalf("session: %q", got)
 	}
 }
+
+// aa86222 on Discord: Desktop on magpie had none of the user's connectors.
+// 3p mode reads its MCP servers from Claude-3p's claude_desktop_config.json,
+// so the ones added signed in with Anthropic (Claude's file) were out of
+// sight. Switching on copies each one Claude-3p doesn't have; one of the
+// same name there stays theirs; Claude's file is never written; off takes
+// the copies back and leaves the tree as it was.
+func TestClaudeDesktopCarriesTheMCPServers(t *testing.T) {
+	home, p := desktopSandbox(t)
+	own := `{"mcpServers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]},"notes":{"command":"notes-mcp"}}}`
+	desktopWrite(t, p.config, own)
+	before := desktopTree(t, p)
+
+	a := claudeDesktop(home)
+	f := a.Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	m := desktopJSON(t, p.config3p)
+	want := desktopJSON(t, p.config)["mcpServers"]
+	if !reflect.DeepEqual(m["mcpServers"], want) {
+		t.Fatalf("Claude-3p's mcpServers: %v, want %v", m["mcpServers"], want)
+	}
+	if b, _ := os.ReadFile(p.config); !strings.Contains(string(b), `"notes":{"command":"notes-mcp"}`) {
+		t.Fatalf("Claude's servers changed:\n%s", b)
+	}
+	// on again and Sync: nothing doubled, nothing more written
+	once := desktopTree(t, p)
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if again := desktopTree(t, p); !reflect.DeepEqual(again, once) {
+		t.Fatalf("on again changed:\n%v\nwas:\n%v", again, once)
+	}
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if after := desktopTree(t, p); !reflect.DeepEqual(after, before) {
+		t.Fatalf("off left:\n%v\nwas:\n%v", after, before)
+	}
+}
+
+// A server Claude-3p has already, by the same name, is the user's (or the
+// library's) and stays; one the user changed in 3p mode since it was
+// copied is theirs and outlives off; Claude-3p's other servers stay.
+func TestClaudeDesktopMCPKeepsThe3pServers(t *testing.T) {
+	home, p := desktopSandbox(t)
+	desktopWrite(t, p.config, `{"mcpServers":{"a":{"command":"a"},"b":{"command":"b-signed-in"},"c":{"command":"c"}}}`)
+	desktopWrite(t, p.config3p, `{"mcpServers":{"b":{"command":"b-3p"},"x":{"command":"x"}}}`)
+	f := claudeDesktop(home).Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	got := desktopJSON(t, p.config3p)["mcpServers"]
+	want := map[string]any{"a": map[string]any{"command": "a"}, "b": map[string]any{"command": "b-3p"},
+		"c": map[string]any{"command": "c"}, "x": map[string]any{"command": "x"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("on: %v", got)
+	}
+	// the user changes c in 3p mode
+	if err := edit.SetJSON(p.config3p, edit.KV{Path: "mcpServers.c.command", Value: "c-mine"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	m := desktopJSON(t, p.config3p)
+	got = m["mcpServers"]
+	want = map[string]any{"b": map[string]any{"command": "b-3p"}, "c": map[string]any{"command": "c-mine"}, "x": map[string]any{"command": "x"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("off: %v", got)
+	}
+	if _, has := m["deploymentMode"]; has {
+		t.Fatalf("off kept the mode: %v", m)
+	}
+}
+
+// A Desktop on magpie from before the servers were carried gets them from
+// Sync at magpie's next start, once: a server the user then takes out in
+// 3p mode isn't brought back by the next Sync.
+func TestClaudeDesktopSyncCarriesTheMCPServersOnce(t *testing.T) {
+	home, p := desktopSandbox(t)
+	a := claudeDesktop(home)
+	if err := a.Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	forget(desktopMCPSeen + p.key)
+	if err := edit.SetJSON(p.config, edit.KV{Path: "mcpServers", Value: map[string]any{"fs": map[string]any{"command": "fs"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopJSON(t, p.config3p)["mcpServers"]; !reflect.DeepEqual(got, map[string]any{"fs": map[string]any{"command": "fs"}}) {
+		t.Fatalf("Sync: %v", got)
+	}
+	if err := edit.DelJSON(p.config3p, "mcpServers"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := desktopJSON(t, p.config3p)["mcpServers"]; has {
+		t.Fatal("Sync brought back a server the user took out")
+	}
+}

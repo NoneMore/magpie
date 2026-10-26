@@ -4124,6 +4124,7 @@ function routingPage(part) {
   // finish hidden work here too. The first visible frame alone owns resume.
   function start() {
     inSightAgain();
+    countdown();
     if (!shown()) { pause(); return; }
     kick();
   }
@@ -4132,8 +4133,15 @@ function routingPage(part) {
   new MutationObserver(start).observe($("#view-routing"), { attributes: true, attributeFilter: ["hidden"] });
   document.addEventListener("visibilitychange", start);
   window.addEventListener("focus", start);
-  // countdowns tick once a second
-  setInterval(() => { if (shown()) { if (!pinned && loaded && cur) sync(); render(); renderActs(listed()); } }, 1000);
+  // countdowns tick once a second, only while the page is in sight: a
+  // tick with nothing to draw wakes the web content process all the same
+  // (#3185), so out of sight there is none until start() sees it again
+  let second = 0;
+  function countdown() {
+    if (!shown()) { clearInterval(second); second = 0; return; }
+    second ||= setInterval(() => { if (!shown()) return countdown(); if (!pinned && loaded && cur) sync(); render(); renderActs(listed()); }, 1000);
+  }
+  countdown();
 
   function offline(msg) {
     off.textContent = msg;

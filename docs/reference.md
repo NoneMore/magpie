@@ -2827,10 +2827,23 @@ MAGPIE_OTEL_ENABLED=true MAGPIE_OTEL_ENDPOINT=http://localhost:4318 magpie serve
   keeps them entire rather than cut at 256 KB. A long reply is written to a
   temporary file; a body too large for the collector is still refused.
 
-For Langfuse, use `https://<your-langfuse-host>/api/public/otel` as the base
-URL and `Authorization=Basic%20<base64(public-key:secret-key)>` as the header.
-Leave metrics off. This uses Langfuse's OTLP ingestion endpoint. For Langfuse
-v4, add the header `x-langfuse-ingestion-version=4` for real-time ingestion.
+For Langfuse, pick **Collector › Langfuse**, then the host (Cloud EU
+`https://cloud.langfuse.com`, Cloud US `https://us.cloud.langfuse.com`, or
+**Self-hosted** with your own address, which also takes another Langfuse
+Cloud region such as `https://jp.cloud.langfuse.com`) and the project's public
+and secret keys (Langfuse › Settings › API Keys). magpie saves them as the
+endpoint `<host>/api/public/otel` and the header
+`Authorization: Basic <base64(public-key:secret-key)>`, kept with the other
+OTLP headers (left out of a backup without keys). Nothing is saved until both
+keys are there. A first setup also adds `x-langfuse-ingestion-version: 4`
+(Langfuse's docs: without it, OTLP data can show up to 10 minutes late), turns
+metrics off, since Langfuse takes traces only, and turns export on. A Langfuse
+endpoint set up by hand opens in this view with its keys filled in, and
+changing a key or the host keeps every other header and the metrics and
+export choices as they were. Switching from another collector leaves that
+collector's headers behind. For `magpie serve`, the same values go in the
+environment: `MAGPIE_OTEL_ENDPOINT=https://cloud.langfuse.com/api/public/otel`
+and `MAGPIE_OTEL_HEADERS=Authorization=Basic%20<base64(public-key:secret-key)>,x-langfuse-ingestion-version=4`.
 
 Traces include agent, provider, model, token counts (including cache and
 reasoning), HTTP status, timing, and route ID. Attempts with the same route ID
