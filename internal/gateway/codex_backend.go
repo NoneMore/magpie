@@ -1057,8 +1057,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		for tries := 0; ; tries++ {
 			ctx := provider.ViaSignedIn(attempt, "codex")
 			if on != nil {
-				// Native relays skip codexBody, including its caller-owned prompt policy.
-				ctx = provider.WithNativeCodexPassthrough(on.Via(attempt))
+				ctx = on.Via(attempt)
 			}
 			req, err := http.NewRequestWithContext(ctx, r.Method, u, bytes.NewReader(body))
 			if err != nil {
