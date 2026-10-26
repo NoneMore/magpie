@@ -280,9 +280,15 @@ func TestPaidRoutesEnforceSameOrigin(t *testing.T) {
 	Routes(mux)
 	request := func(path, origin, site, typ string) int {
 		r := httptest.NewRequest(http.MethodPost, "http://localhost:3426/api/lm-detector/"+path, strings.NewReader(`{"model":"mock/model"}`))
-		if origin != "" { r.Header.Set("Origin", origin) }
-		if site != "" { r.Header.Set("Sec-Fetch-Site", site) }
-		if typ != "" { r.Header.Set("Content-Type", typ) }
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		if typ != "" {
+			r.Header.Set("Content-Type", typ)
+		}
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
 		return w.Code
