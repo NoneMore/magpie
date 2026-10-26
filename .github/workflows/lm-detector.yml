@@ -20,6 +20,13 @@ on:
   pull_request:
     paths:
       - 'plugins/lm-detector/**'
+      - 'internal/lmdetector/**'
+      - 'internal/gui/assets/plugins/lm-detector/**'
+      - 'internal/gui/assets/index.html'
+      - 'internal/gui/api.go'
+      - 'plugins/all/all.go'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/lm-detector.yml'
       - '.github/scripts/prepare-lm-detector.mjs'
       - 'internal/cli/bundled_lm_detector.go'
