@@ -116,7 +116,7 @@ func TestNativeSamplingThroughGateway(t *testing.T) {
 					fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
 				}
 			} else if isChat {
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": numbers}}}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": []any{map[string]string{"text": numbers[:len(numbers)/2]}, map[string]string{"text": numbers[len(numbers)/2:]}}}}}})
 			} else {
 				_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{map[string]any{"type": "message", "content": []any{map[string]string{"type": "output_text", "text": numbers}}}}})
 			}
