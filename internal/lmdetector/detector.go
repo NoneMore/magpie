@@ -78,6 +78,10 @@ type manager struct {
 	mu       sync.Mutex
 	enabled  bool
 	starting int
+	active   int // Actual execute goroutines; cancelled jobs retain their slot until exit.
+	epoch    uint64
+	next     uint64
+	pending  map[uint64]context.CancelFunc
 	jobs     map[string]*Job
 	detector *lmfpd.Detector
 }
@@ -87,6 +91,9 @@ var service = manager{jobs: make(map[string]*Job)}
 func Enable() {
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	if !service.enabled {
+		service.epoch++
+	}
 	service.enabled = true
 }
 
@@ -95,6 +102,10 @@ func Disable() {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	service.enabled = false
+	service.epoch++
+	for _, cancel := range service.pending {
+		cancel() // Also stop Start requests still loading models or references.
+	}
 	for _, j := range service.jobs {
 		if j.State == "running" {
 			j.State = "cancelled"
@@ -196,7 +207,7 @@ func Models(ctx context.Context) ([]string, error) {
 }
 
 func validModel(v string) bool {
-	if v == "" || strings.HasPrefix(v, "group/") || strings.HasPrefix(v, "routing/") || strings.ContainsAny(v, " \n\t\r") {
+	if v == "" || strings.HasPrefix(v, "group/") || strings.HasPrefix(v, "routing/") || strings.HasPrefix(v, "auto/") || strings.ContainsAny(v, " \n\t\r") {
 		return false
 	}
 	p, m, ok := strings.Cut(v, "/")
@@ -283,15 +294,30 @@ func (o Options) config(base, key string) lmfpd.DetectConfig {
 		Count: o.Count, Parallel: o.Parallel}
 }
 
+// publicAnalysis trims the transport payload without altering the SDK result used for scoring.
+func publicAnalysis(a *lmfpd.Analysis) *lmfpd.Analysis {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	out.Results = slices.Clone(a.Results)
+	if len(out.Results) > 20 {
+		out.Results = out.Results[:20]
+	}
+	return &out
+}
+
 func snapshot(j *Job) Job {
 	out := *j
 	out.cancel = nil
 	out.Rounds = make([]Round, len(j.Rounds))
 	for i, r := range j.Rounds {
 		out.Rounds[i] = r
+		out.Rounds[i].Analysis = publicAnalysis(r.Analysis)
 		out.Rounds[i].Samples = slices.Clone(r.Samples)
 	}
 	out.Samples = slices.Clone(j.Samples)
+	out.Analysis = publicAnalysis(j.Analysis)
 	return out
 }
 
@@ -314,27 +340,36 @@ func Start(ctx context.Context, opts Options) (Job, error) {
 		service.mu.Unlock()
 		return Job{}, errors.New("native LM Detector is disabled")
 	}
-	running := service.starting
-	for _, j := range service.jobs {
-		if j.State == "running" {
-			running++
-		}
-	}
+	running := service.starting + service.active
 	if running >= maxJobs {
 		service.mu.Unlock()
 		return Job{}, errors.New("two detections are already running")
 	}
 	service.starting++
+	service.next++
+	ticket := service.next
+	epoch := service.epoch
+	initCtx, initCancel := context.WithCancel(ctx)
+	if service.pending == nil {
+		service.pending = make(map[uint64]context.CancelFunc)
+	}
+	service.pending[ticket] = initCancel
 	service.mu.Unlock()
-	defer func() { service.mu.Lock(); service.starting--; service.mu.Unlock() }()
-	list, err := Models(ctx)
+	defer func() {
+		initCancel()
+		service.mu.Lock()
+		delete(service.pending, ticket)
+		service.starting--
+		service.mu.Unlock()
+	}()
+	list, err := Models(initCtx)
 	if err != nil {
 		return Job{}, err
 	}
 	if !slices.Contains(list, opts.Model) {
 		return Job{}, errors.New("model is not currently exposed by Gateway")
 	}
-	d, err := reference(ctx)
+	d, err := reference(initCtx)
 	if err != nil {
 		return Job{}, err
 	}
@@ -348,13 +383,14 @@ func Start(ctx context.Context, opts Options) (Job, error) {
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	if !service.enabled {
-		return Job{}, errors.New("native LM Detector was disabled")
+	if !service.enabled || service.epoch != epoch || initCtx.Err() != nil {
+		return Job{}, errors.New("native LM Detector was disabled during start")
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	j := &Job{JobID: uid, Options: opts, State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Rounds: []Round{}, Samples: []Sample{}, cancel: cancel}
 	service.jobs[uid] = j
+	service.active++
 	if len(service.jobs) > maxSaved {
 		for key, old := range service.jobs {
 			if key != uid && old.State != "running" {
@@ -384,7 +420,12 @@ func Cancel(jobID string) (Job, error) {
 }
 
 func execute(ctx context.Context, j *Job, d *lmfpd.Detector, cfg lmfpd.DetectConfig) {
-	defer j.cancel()
+	defer func() {
+		j.cancel()
+		service.mu.Lock()
+		service.active--
+		service.mu.Unlock()
+	}()
 	fail := func(err error) {
 		service.mu.Lock()
 		defer service.mu.Unlock()
@@ -510,7 +551,24 @@ func execute(ctx context.Context, j *Job, d *lmfpd.Detector, cfg lmfpd.DetectCon
 	}
 	service.mu.Lock()
 	if j.State == "running" {
-		j.State = "done"
+		scored := false
+		var reasons []string
+		for _, round := range j.Rounds {
+			if round.Analysis != nil {
+				scored = true // Includes the valid not_model verdict.
+			} else if round.Error != "" {
+				reasons = append(reasons, round.Error)
+			}
+		}
+		if scored {
+			j.State = "done"
+		} else {
+			j.State = "failed"
+			j.Error = strings.Join(reasons, "; ")
+			if j.Error == "" {
+				j.Error = "No detection round could be scored"
+			}
+		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		j.FinishedAt = &now
 	}
