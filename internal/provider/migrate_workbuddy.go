@@ -21,7 +21,7 @@ func init() {
 			out: func() ([]Moving, error) {
 				var out []Moving
 				for _, a := range wbLogins(w) {
-					m := Moving{User: a.User, First: a.Active, On: a.On, Lapsed: a.Lapsed != "", Own: a.own, Plan: a.Plan}
+					m := Moving{User: a.User, ID: a.creds.UID, First: a.Active, On: a.On, Lapsed: a.Lapsed != "", Own: a.own, Plan: a.Plan}
 					if a.own {
 						m.Auth = map[string]any{"type": "oauth", "source": "desktop", "access": "", "refresh": "", "expires": 0,
 							"accountId": a.User, "uid": a.creds.UID}
