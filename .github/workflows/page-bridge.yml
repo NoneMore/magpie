@@ -66,6 +66,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Prepare native detector offline reference data
+        run: node .github/scripts/prepare-lm-detector.mjs
+
       - name: Check Go formatting
         shell: bash
         run: |
@@ -122,6 +125,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Makefile's release-windows target prepares the bank as well; do it
+      # explicitly here before building both GUI and standalone CLI artifacts.
+      - name: Prepare native detector offline reference data
+        run: node .github/scripts/prepare-lm-detector.mjs
 
       - name: Build Windows GUI with icon and manifest
         env:
