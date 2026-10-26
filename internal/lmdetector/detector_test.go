@@ -306,3 +306,73 @@ func TestPaidRoutesEnforceSameOrigin(t *testing.T) {
 		t.Fatalf("normal WebView origin was rejected: status %d", got)
 	}
 }
+
+func TestBoundedSamplingProxyCapsJSONAndSSE(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		media string
+		bytes int
+		limit int
+	}{
+		{name: "oversized JSON", media: "application/json", bytes: 2 << 20, limit: maxSamplingResponse},
+		{name: "undelimited SSE", media: "text/event-stream", bytes: 512 << 10, limit: maxSamplingSSEFrame},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != "Bearer real-key" {
+					t.Errorf("upstream token mismatch: %q", got)
+				}
+				w.Header().Set("Content-Type", tc.media)
+				_, _ = io.WriteString(w, strings.Repeat("x", tc.bytes))
+			}))
+			defer upstream.Close()
+			cfg, closeProxy, err := boundedSamplingGateway(lmfpd.DetectConfig{
+				BaseURL: upstream.URL + "/v1", APIKey: "real-key", Model: "mock/model", API: lmfpd.APIResponses, Timeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeProxy()
+			req, err := http.NewRequest(http.MethodPost, cfg.BaseURL+"/responses", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(body) > tc.limit {
+				t.Fatalf("unbounded %s response: %d > %d", tc.name, len(body), tc.limit)
+			}
+			if len(body) < tc.limit-8192 {
+				t.Fatalf("unexpectedly short proxy response: %d", len(body))
+			}
+		})
+	}
+}
+
+func TestBoundedSamplingProxyRejectsMissingSecret(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("untrusted loopback request reached Gateway")
+	}))
+	defer upstream.Close()
+	cfg, closeProxy, err := boundedSamplingGateway(lmfpd.DetectConfig{BaseURL: upstream.URL + "/v1", APIKey: "real-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeProxy()
+	resp, err := http.Post(cfg.BaseURL+"/responses", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing proxy bearer token returned %d", resp.StatusCode)
+	}
+}
