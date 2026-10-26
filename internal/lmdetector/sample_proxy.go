@@ -2,8 +2,10 @@ package lmdetector
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -77,8 +79,44 @@ func boundedSamplingGateway(cfg lmfpd.DetectConfig) (lmfpd.DetectConfig, func(),
 		media := resp.Header.Get("Content-Type")
 		w.Header().Set("Content-Type", media)
 		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(resp.StatusCode)
 		stream := strings.Contains(strings.ToLower(media), "text/event-stream")
+		if !stream && r.URL.Path == "/v1/chat/completions" {
+			data, err := io.ReadAll(io.LimitReader(resp.Body, maxSamplingResponse+1))
+			if err != nil || len(data) > maxSamplingResponse {
+				http.Error(w, "Gateway JSON response exceeds sampling limit", http.StatusBadGateway)
+				return
+			}
+			// Upstream SDK v0.1.0 expects a string. Some providers send
+			// Chat message.content as [{text: "..."}], supported by the old UI.
+			var payload map[string]any
+			if json.Unmarshal(data, &payload) == nil {
+				if choices, ok := payload["choices"].([]any); ok {
+					for _, item := range choices {
+						choice, _ := item.(map[string]any)
+						message, _ := choice["message"].(map[string]any)
+						parts, ok := message["content"].([]any)
+						if !ok {
+							continue
+						}
+						var text strings.Builder
+						for _, item := range parts {
+							part, _ := item.(map[string]any)
+							if value, ok := part["text"].(string); ok {
+							text.WriteString(value)
+						}
+						}
+						message["content"] = text.String()
+					}
+				}
+					if encoded, err := json.Marshal(payload); err == nil && len(encoded) <= maxSamplingResponse {
+						data = encoded
+					}
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(data)
+			return
+		}
+		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		buf := make([]byte, 8<<10)
 		var total, frame int
