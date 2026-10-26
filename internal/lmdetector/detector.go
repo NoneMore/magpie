@@ -437,6 +437,13 @@ func execute(ctx context.Context, j *Job, d *lmfpd.Detector, cfg lmfpd.DetectCon
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		j.FinishedAt = &now
 	}
+	bounded, closeProxy, err := boundedSamplingGateway(cfg)
+	if err != nil {
+		fail(err)
+		return
+	}
+	defer closeProxy()
+	cfg = bounded
 	for round := 1; round <= j.Repeat; round++ {
 		if ctx.Err() != nil {
 			return
@@ -484,7 +491,10 @@ func execute(ctx context.Context, j *Job, d *lmfpd.Detector, cfg lmfpd.DetectCon
 					j.Samples[index].State = "waiting"
 					j.Samples[index].StartedAt = &ms
 					service.mu.Unlock()
-					sample := lmfpd.RequestSample(ctx, cfg, challenges[index])
+					// Bound the full stream lifetime, not just time to first SSE byte.
+					sampleCtx, sampleCancel := context.WithTimeout(ctx, cfg.Timeout)
+					sample := lmfpd.RequestSample(sampleCtx, cfg, challenges[index])
+					sampleCancel()
 					finish := time.Now().UnixMilli()
 					duration := time.Since(start).Milliseconds()
 					numbers := lmfpd.ParseNumbers(sample.Text)
