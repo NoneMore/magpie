@@ -14,7 +14,7 @@ The SDK's default HTTP reader remains unbounded, so Magpie retains a short-lived
 
 Run `node .github/scripts/prepare-lm-detector.mjs` before direct `go build`. The script pins `lmfpd@0.0.1792416845676`, checks both upstream asset SHA-256 values against audited constants, and stages **only** `unified_bank.json` and `shared_detector.bin` in the Go embed. The old Bun executor, Page and shared JavaScript are **not packaged in the binary**. Go SDK `LoadOptions.Sources` points to the extracted local reference directory; no runtime download occurs. `make release-windows` prepares data automatically.
 
-The legacy source-level Bun tests are retained for comparison during migration but are not shipped or invoked by the native detector. Legacy registration entries in `plugins.json` are precisely retired without disturbing other plugins; the new built-in is independently managed in `plugins.yml` (old Off/uninstall preference is intentionally **not** mapped over). See [tracking issue #9](https://github.com/NoneMore/magpie/issues/9).
+The legacy Bun detector, TypeScript scoring modules, Page and tests have been removed. A native Gateway integration test now covers Chat/Responses × JSON/SSE through the actual Gateway using only mock upstream data. Legacy registration entries in `plugins.json` are precisely retired without disturbing other plugins; the new built-in is independently managed in `plugins.yml` (old Off/uninstall preference is intentionally **not** mapped over). See [tracking issue #9](https://github.com/NoneMore/magpie/issues/9).
 
 ## Native local API
 
@@ -27,6 +27,6 @@ The routes are within Magpie's existing authenticated UI boundary and additional
 
 ## Verification
 
-The dedicated CI prepares verified offline assets, tests SDK v0.2.0 sampling against mock Gateway responses (Chat/Responses × JSON/SSE), live SSE progress, cancellation, same-origin protections, size limits and offline `Analyze`, then runs the preserved Bun regression tests. The Page Bridge Windows path also prepares and checks embedded references before creating its binaries.
+The dedicated CI prepares verified offline assets, tests SDK v0.2.0 sampling against mock Gateway responses (Chat/Responses × JSON/SSE), live SSE progress, cancellation, same-origin protections, size limits and offline `Analyze`, then exercises the real Magpie Gateway with a native Go SDK integration test (no Bun process). The Page Bridge Windows path also prepares and checks embedded references before creating its binaries.
 
 The Provider-row context-menu action and Chromium/WebKit native UI behavior still require browser-level validation; CI results should be checked before marking the PR ready. Detection makes paid API calls and **closed-set fingerprint rankings do not prove a model's identity**.

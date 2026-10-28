@@ -45,11 +45,16 @@ jobs:
           node-version: '22'
       - name: Prepare pinned build-time reference data
         run: node .github/scripts/prepare-lm-detector.mjs
-      - name: Run direct-detector core tests
-        working-directory: plugins/lm-detector
-        run: bun test tests/*.test.ts
-      - name: Check backend and Page JavaScript syntax
-        run: node --check plugins/lm-detector/index.js && node --check plugins/lm-detector/page/app.js
+      - name: Confirm superseded Bun detector was removed
+        run: |
+          test ! -e plugins/lm-detector/index.js
+          test ! -d plugins/lm-detector/page
+          test ! -d plugins/lm-detector/shared
+          test ! -d plugins/lm-detector/tests
+      - name: Check native detector Page JavaScript syntax
+        run: |
+          node --check internal/gui/assets/plugins/lm-detector/client.js
+          node --check internal/gui/assets/plugins/lm-detector/i18n.js
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -75,8 +80,8 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go test -tags nogui -run TestPluginsImportOnlyCore -count=1 ./internal/pluginrt
-      - name: Gateway + Bun host integration (mock upstream)
+      - name: Gateway + native Go SDK integration (mock upstream)
         timeout-minutes: 8
         env:
           CGO_ENABLED: '0'
-        run: go test -tags 'nogui lm_detector_e2e' -run TestLMDetectorGatewayBunIntegration -count=1 -v -timeout 4m ./plugins/lm-detector
+        run: go test -tags 'nogui lm_detector_e2e' -run TestLMDetectorNativeGatewayIntegration -count=1 -v -timeout 4m ./plugins/lm-detector
