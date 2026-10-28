@@ -1,9 +1,16 @@
-name: LM Detector bundled plugin
+name: LM Detector native Go migration
 
 on:
   push:
     paths:
       - 'plugins/lm-detector/**'
+      - 'internal/lmdetector/**'
+      - 'internal/gui/assets/plugins/lm-detector/**'
+      - 'internal/gui/assets/index.html'
+      - 'internal/gui/api.go'
+      - 'plugins/all/all.go'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/lm-detector.yml'
       - '.github/scripts/prepare-lm-detector.mjs'
       - 'internal/cli/bundled_lm_detector.go'
@@ -13,6 +20,13 @@ on:
   pull_request:
     paths:
       - 'plugins/lm-detector/**'
+      - 'internal/lmdetector/**'
+      - 'internal/gui/assets/plugins/lm-detector/**'
+      - 'internal/gui/assets/index.html'
+      - 'internal/gui/api.go'
+      - 'plugins/all/all.go'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/lm-detector.yml'
       - '.github/scripts/prepare-lm-detector.mjs'
       - 'internal/cli/bundled_lm_detector.go'
@@ -25,21 +39,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Prepare pinned build-time reference data
         run: node .github/scripts/prepare-lm-detector.mjs
-      - name: Run direct-detector core tests
-        working-directory: plugins/lm-detector
-        run: bun test tests/*.test.ts
-      - name: Check backend and Page JavaScript syntax
-        run: node --check plugins/lm-detector/index.js && node --check plugins/lm-detector/page/app.js
+      - name: Confirm superseded Bun detector was removed
+        run: |
+          test ! -e plugins/lm-detector/index.js
+          test ! -d plugins/lm-detector/page
+          test ! -d plugins/lm-detector/shared
+          test ! -d plugins/lm-detector/tests
+      - name: Check native detector Page JavaScript syntax
+        run: |
+          node --check internal/gui/assets/plugins/lm-detector/client.js
+          node --check internal/gui/assets/plugins/lm-detector/i18n.js
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Test offline bundle registration and upgrades
+      - name: Verify pinned Go SDK and committed formatting
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go mod download github.com/Ikaleio/lm-detector/sdk/go@v0.2.0 github.com/klauspost/compress@v1.18.4
+          go mod verify
+          grep 'github.com/Ikaleio/lm-detector/sdk/go v0.2.0 h1:' go.sum
+          unformatted=$(gofmt -l internal/lmdetector/*.go plugins/lm-detector/lm_detector.go internal/cli/bundled_lm_detector.go internal/plugin/bundled.go internal/gui/api.go plugins/all/all.go)
+          if [ -n "$unformatted" ]; then printf 'Go files need gofmt:\n%s\n' "$unformatted"; gofmt -d $unformatted; exit 1; fi
+      - name: Test native Go SDK adapter on mocked Gateway
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags nogui -count=1 -v ./internal/lmdetector ./plugins/lm-detector
+      - name: Test offline reference extraction and bundle migration
         env:
           CGO_ENABLED: '0'
           LM_DETECTOR_REQUIRED: '1'
@@ -48,8 +79,8 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go test -tags nogui -run TestPluginsImportOnlyCore -count=1 ./internal/pluginrt
-      - name: Gateway + Bun host integration (mock upstream)
+      - name: Gateway + native Go SDK integration (mock upstream)
         timeout-minutes: 8
         env:
           CGO_ENABLED: '0'
-        run: go test -tags 'nogui lm_detector_e2e' -run TestLMDetectorGatewayBunIntegration -count=1 -v -timeout 4m ./plugins/lm-detector
+        run: go test -tags 'nogui lm_detector_e2e' -run TestLMDetectorNativeGatewayIntegration -count=1 -v -timeout 4m ./plugins/lm-detector

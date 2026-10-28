@@ -263,6 +263,18 @@
   // context: { provider: { id, name } } or { agent: { id, name } }
   magpie.actions = (menu, context) => {
     const items = [];
+    // Native built-in pages can contribute a provider action without a
+    // community iframe or the Bun tool bridge. Respect the live Off switch.
+    const native = document.querySelector('button[data-view="lm-detector"][data-feature="lm-detector"]');
+    if (menu === "provider" && context?.provider?.id && native && getComputedStyle(native).display !== "none") {
+      items.push({
+        name: t("Detect model fingerprint"), literal: true, icon: PUZZLE, sep: true,
+        run: async () => {
+          if (await show("lm-detector") === false) return;
+          magpie.page("lm-detector")?.reveal?.(context.provider);
+        },
+      });
+    }
     for (const [key, p] of pages) {
       if (p.gone) continue;
       for (const a of p.entry.actions || []) {

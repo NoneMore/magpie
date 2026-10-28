@@ -1,0 +1,535 @@
+package lmdetector
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	lmfpd "github.com/Ikaleio/lm-detector/sdk/go"
+	"github.com/yetone/magpie/internal/testenv"
+	"testing"
+)
+
+func TestMain(m *testing.M) {
+	testenv.Offline()
+	testenv.Main(m)
+}
+
+func TestOptionsRejectsGroupsAndBadBoundaries(t *testing.T) {
+	cases := []struct {
+		name    string
+		options Options
+		wantErr bool
+	}{
+		{"defaults", Options{Model: "one/a"}, false},
+		{"chat", Options{Model: "one/a", Format: "chat", Stream: true, Strict: true, Count: 3}, false},
+		{"routing group", Options{Model: "group/test"}, true},
+		{"auto routing group", Options{Model: "auto/test"}, true},
+		{"direct model", Options{Model: "provider/test"}, false},
+		{"missing provider", Options{Model: "no-slash"}, true},
+		{"too many requests", Options{Model: "one/a", Count: 4}, true},
+		{"too many rounds", Options{Model: "one/a", Repeat: 21}, true},
+		{"strict partial", Options{Model: "one/a", Count: 2, Strict: true}, true},
+		{"bad timeout", Options{Model: "one/a", Timeout: 601}, true},
+		{"bad format", Options{Model: "one/a", Format: "messages"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.options.check()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("check = %v; want error %t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestModelsOnlyOffersDirectGatewayIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("unexpected Gateway request: %s / %s", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{
+			{"id": "beta/m2"}, {"id": "group/choice"}, {"id": "alpha/m1"}, {"id": "alpha/m1"}, {"id": "routing/slot"}, {"id": "auto/choice"},
+		}})
+	}))
+	defer server.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", server.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	got, err := Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha/m1", "beta/m2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models=%q, want %q", got, want)
+	}
+}
+
+func TestNativeRoutesRejectWhenDisabled(t *testing.T) {
+	Disable()
+	mux := http.NewServeMux()
+	Routes(mux)
+	for _, path := range []string{"models", "start", "status", "cancel"} {
+		req := httptest.NewRequest("POST", "/api/lm-detector/"+path, nil)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, req)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s status=%d; want 503", path, response.Code)
+		}
+	}
+}
+
+func TestNativeSamplingThroughGateway(t *testing.T) {
+	numbers := strings.TrimSuffix(strings.Repeat("199, ", 300), ", ")
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": "test/fixture"}}})
+		case r.Method == "POST" && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses"):
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			var request struct {
+				Stream bool `json:"stream"`
+			}
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Error(err)
+				return
+			}
+			isChat := r.URL.Path == "/v1/chat/completions"
+			if request.Stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if isChat {
+					fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": numbers}, "finish_reason": nil}}}))
+					fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				} else {
+					fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{"type": "response.output_text.delta", "delta": numbers}))
+					fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
+				}
+			} else if isChat {
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": []any{map[string]string{"text": numbers[:len(numbers)/2]}, map[string]string{"text": numbers[len(numbers)/2:]}}}}}})
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{map[string]any{"type": "message", "content": []any{map[string]string{"type": "output_text", "text": numbers}}}}})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mock.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", mock.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	Enable()
+	defer Disable()
+	for _, format := range []string{"chat", "responses"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", format, stream), func(t *testing.T) {
+				start, err := Start(context.Background(), Options{Model: "test/fixture", Format: format, Stream: stream, Count: 1, Parallel: 1, Repeat: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					job, err := Status(start.JobID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if job.State != "running" {
+						if job.State != "done" || job.Completed != 1 || len(job.Rounds) != 1 || job.Rounds[0].Analysis == nil || job.Rounds[0].Analysis.Decision != "not_model" {
+							t.Fatalf("unexpected native detection: %+v", job)
+						}
+						return
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("native detector job did not finish")
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+			})
+		}
+	}
+}
+func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+func awaitNativeJob(t *testing.T, id string) Job {
+	t.Helper()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		j, err := Status(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.State != "running" {
+			return j
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("native job timed out")
+	return Job{}
+}
+
+func TestJobAllFailureAndPartialSuccess(t *testing.T) {
+	var calls atomic.Int32
+	var failAll atomic.Bool
+	failAll.Store(true)
+	numbers := strings.TrimSuffix(strings.Repeat("199, ", 300), ", ")
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"id": "mock/model"}}})
+			return
+		}
+		if failAll.Load() || calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, "sample failure")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{map[string]any{"type": "message", "content": []any{map[string]string{"type": "output_text", "text": numbers}}}}})
+	}))
+	defer mock.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", mock.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	Enable()
+	defer Disable()
+	start := func() Job {
+		t.Helper()
+		job, err := Start(context.Background(), Options{Model: "mock/model", Count: 1, Parallel: 1, Repeat: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return awaitNativeJob(t, job.JobID)
+	}
+	failed := start()
+	if failed.State != "failed" || failed.Error == "" || len(failed.Rounds) != 2 || failed.Rounds[0].Analysis != nil {
+		t.Fatalf("all failure must fail the job: %+v", failed)
+	}
+	failAll.Store(false)
+	calls.Store(0)
+	partial := start()
+	if partial.State != "done" || len(partial.Rounds) != 2 || partial.Rounds[0].Analysis != nil || partial.Rounds[1].Analysis == nil {
+		t.Fatalf("one scored round must complete the job: %+v", partial)
+	}
+}
+
+func TestPublicSnapshotOnlyKeepsTwentyResults(t *testing.T) {
+	analysis := &lmfpd.Analysis{Results: make([]lmfpd.AnalysisResult, 45)}
+	j := &Job{Analysis: analysis, Rounds: []Round{{Analysis: analysis}, {Analysis: analysis}}}
+	out := snapshot(j)
+	if len(out.Analysis.Results) != 20 || len(out.Rounds[0].Analysis.Results) != 20 || len(out.Rounds[1].Analysis.Results) != 20 {
+		t.Fatalf("snapshot must cap every exposed ranking: %+v", out)
+	}
+	if len(analysis.Results) != 45 {
+		t.Fatal("public snapshot mutated internal scoring result")
+	}
+}
+
+func TestPublicSnapshotRedactsEchoedGatewayCredentials(t *testing.T) {
+	key := "sensitive-gateway-key-123"
+	j := &Job{
+		JobID:      "test-public-redaction",
+		State:      "failed",
+		gatewayKey: key,
+		Error:      "Gateway error: " + key,
+		Samples:    []Sample{{State: "failed", Error: "SSE type:error echoed " + key}},
+		Rounds: []Round{{
+			Error:   "JSON error.message echoed " + key,
+			Samples: []Sample{{State: "failed", Error: "round sample " + key}},
+		}},
+	}
+	service.mu.Lock()
+	service.jobs[j.JobID] = j
+	service.mu.Unlock()
+	defer func() {
+		service.mu.Lock()
+		delete(service.jobs, j.JobID)
+		service.mu.Unlock()
+	}()
+	out, err := Status(j.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(public), key) {
+		t.Fatalf("public status exposed real Gateway key: %s", public)
+	}
+	if strings.Count(string(public), "[REDACTED]") != 4 {
+		t.Fatalf("expected redaction on Job, Round and both Sample errors: %s", public)
+	}
+	if !strings.Contains(j.Samples[0].Error, key) || !strings.Contains(j.Rounds[0].Samples[0].Error, key) {
+		t.Fatal("public redaction modified the internal job")
+	}
+}
+
+func TestCancellationSettlesOutstandingSamples(t *testing.T) {
+	for _, mode := range []string{"cancel", "disable"} {
+		t.Run(mode, func(t *testing.T) {
+			Enable()
+			started := time.Now().Add(-time.Second).UnixMilli()
+			finished := started + 200
+			cancelledContext := false
+			j := &Job{
+				JobID:     "test-samples-" + mode,
+				State:     "running",
+				Completed: 1,
+				cancel:    func() { cancelledContext = true },
+				Samples: []Sample{
+					{Index: 1, State: "queued", Count: 0},
+					{Index: 2, State: "waiting", StartedAt: &started, Count: 0},
+					{Index: 3, State: "streaming", StartedAt: &started, Count: 17},
+					{Index: 4, State: "complete", StartedAt: &started, FinishedAt: &finished, Count: 300},
+				},
+			}
+			service.mu.Lock()
+			service.jobs[j.JobID] = j
+			service.mu.Unlock()
+			defer func() {
+				service.mu.Lock()
+				delete(service.jobs, j.JobID)
+				service.mu.Unlock()
+			}()
+			if mode == "cancel" {
+				if _, err := Cancel(j.JobID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				Disable()
+			}
+			out, err := Status(j.JobID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.State != "cancelled" || out.Completed != 4 || out.FinishedAt == nil || !cancelledContext {
+				t.Fatalf("job did not settle on cancellation: %+v", out)
+			}
+			for i, sample := range out.Samples {
+				if sample.FinishedAt == nil || (i < 3 && sample.State != "cancelled") {
+					t.Fatalf("sample %d never settled: %+v", i, sample)
+				}
+			}
+			if out.Samples[2].Count != 17 || out.Samples[2].DurationMs == nil || out.Samples[3].State != "complete" {
+				t.Fatalf("cancel lost prior progress or complete status: %+v", out.Samples)
+			}
+		})
+	}
+}
+
+func TestDisableEnableCannotRevivePendingStart(t *testing.T) {
+	entered := make(chan struct{})
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		close(entered)
+		<-r.Context().Done()
+	}))
+	defer mock.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", mock.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	Enable()
+	defer Disable()
+	result := make(chan error, 1)
+	go func() {
+		_, err := Start(context.Background(), Options{Model: "test/model"})
+		result <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("mock models endpoint was never called")
+	}
+	Disable()
+	Enable()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("an obsolete pending Start was accepted")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("disabled pending Start did not cancel")
+	}
+}
+
+func TestPaidRoutesEnforceSameOrigin(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"id": "mock/model"}}})
+	}))
+	defer mock.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", mock.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	Enable()
+	defer Disable()
+	mux := http.NewServeMux()
+	Routes(mux)
+	request := func(path, origin, site, typ string) int {
+		r := httptest.NewRequest(http.MethodPost, "http://localhost:3426/api/lm-detector/"+path, strings.NewReader(`{"model":"mock/model"}`))
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		if typ != "" {
+			r.Header.Set("Content-Type", typ)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	if got := request("start", "http://localhost:4242", "same-site", "text/plain"); got != http.StatusBadRequest {
+		t.Fatalf("same-site different-origin attack status = %d", got)
+	}
+	if got := request("models", "http://localhost:4242", "same-site", ""); got != http.StatusBadRequest {
+		t.Fatalf("cross-origin read route status = %d", got)
+	}
+	if got := request("start", "http://localhost:3426", "same-origin", "text/plain"); got != http.StatusBadRequest {
+		t.Fatalf("wrong Content-Type status = %d", got)
+	}
+	if got := request("models", "http://localhost:3426", "same-origin", ""); got != http.StatusOK {
+		t.Fatalf("normal WebView origin was rejected: status %d", got)
+	}
+}
+
+func TestBoundedSamplingProxyCapsJSONAndSSE(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		media string
+		bytes int
+		limit int
+	}{
+		{name: "oversized JSON", media: "application/json", bytes: 2 << 20, limit: maxSamplingResponse},
+		{name: "undelimited SSE", media: "text/event-stream", bytes: 512 << 10, limit: maxSamplingSSEFrame},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != "Bearer real-key" {
+					t.Errorf("upstream token mismatch: %q", got)
+				}
+				w.Header().Set("Content-Type", tc.media)
+				_, _ = io.WriteString(w, strings.Repeat("x", tc.bytes))
+			}))
+			defer upstream.Close()
+			cfg, closeProxy, err := boundedSamplingGateway(lmfpd.DetectConfig{
+				BaseURL: upstream.URL + "/v1", APIKey: "real-key", Model: "mock/model", API: lmfpd.APIResponses, Timeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeProxy()
+			req, err := http.NewRequest(http.MethodPost, cfg.BaseURL+"/responses", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(body) > tc.limit {
+				t.Fatalf("unbounded %s response: %d > %d", tc.name, len(body), tc.limit)
+			}
+			if len(body) < tc.limit-8192 {
+				t.Fatalf("unexpectedly short proxy response: %d", len(body))
+			}
+		})
+	}
+}
+
+func TestBoundedSamplingProxyRejectsMissingSecret(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("untrusted loopback request reached Gateway")
+	}))
+	defer upstream.Close()
+	cfg, closeProxy, err := boundedSamplingGateway(lmfpd.DetectConfig{BaseURL: upstream.URL + "/v1", APIKey: "real-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeProxy()
+	resp, err := http.Post(cfg.BaseURL+"/responses", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing proxy bearer token returned %d", resp.StatusCode)
+	}
+}
+
+func TestNativeSSELiveProgress(t *testing.T) {
+	first := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"id": "mock/model"}}})
+			return
+		}
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{
+			"type": "response.output_text.delta", "delta": strings.Repeat("199, ", 100),
+		}))
+		w.(http.Flusher).Flush()
+		close(first)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{
+			"type": "response.output_text.delta", "delta": strings.Repeat("199, ", 250),
+		}))
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
+	}))
+	defer mock.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", mock.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	Enable()
+	defer Disable()
+	start, err := Start(context.Background(), Options{Model: "mock/model", Stream: true, Count: 1, Parallel: 1, Repeat: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no first SSE frame")
+	}
+	var progress Job
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		progress, err = Status(start.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(progress.Samples) == 1 && progress.Samples[0].Count >= 100 && progress.Samples[0].FirstByteMs != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(progress.Samples) != 1 || progress.Samples[0].Count < 100 ||
+		progress.Samples[0].FirstByteMs == nil || progress.Completed != 0 ||
+		progress.Samples[0].State != "streaming" {
+		t.Fatalf("streaming counts and first byte must be visible before completion: %+v", progress)
+	}
+	// Cancelling the blocked upstream reader should release the final request.
+	Cancel(start.JobID)
+}

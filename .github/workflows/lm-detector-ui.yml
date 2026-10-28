@@ -1,0 +1,41 @@
+name: LM Detector native browser parity
+
+on:
+  push:
+    branches:
+      - refactor/lm-detector-upstream-sdk-phase1
+    paths:
+      - internal/gui/tests/lm-detector.test.cjs
+      - internal/gui/assets/plugins/lm-detector/**
+      - internal/gui/assets/pluginpages.js
+      - internal/gui/assets/index.html
+      - .github/workflows/lm-detector-ui.yml
+  pull_request:
+    paths:
+      - internal/gui/tests/lm-detector.test.cjs
+      - internal/gui/assets/plugins/lm-detector/**
+      - internal/gui/assets/pluginpages.js
+      - internal/gui/assets/index.html
+      - .github/workflows/lm-detector-ui.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-detector-page:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated Playwright browsers
+        run: |
+          npm install --prefix "$RUNNER_TEMP/magpie-playwright" --no-save --no-audit --no-fund playwright@1.62.1
+          node "$RUNNER_TEMP/magpie-playwright/node_modules/playwright/cli.js" install --with-deps chromium webkit
+      - name: Test Provider action and native detector in Chromium and WebKit
+        env:
+          NODE_PATH: ${{ runner.temp }}/magpie-playwright/node_modules
+        run: node --test --test-concurrency=1 internal/gui/tests/lm-detector.test.cjs

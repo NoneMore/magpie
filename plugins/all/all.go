@@ -7,6 +7,7 @@ import (
 	_ "github.com/yetone/magpie/plugins/gateway"
 	_ "github.com/yetone/magpie/plugins/groups"
 	_ "github.com/yetone/magpie/plugins/library"
+	_ "github.com/yetone/magpie/plugins/lm-detector"
 	_ "github.com/yetone/magpie/plugins/middleware"
 	_ "github.com/yetone/magpie/plugins/otel"
 	_ "github.com/yetone/magpie/plugins/redact"

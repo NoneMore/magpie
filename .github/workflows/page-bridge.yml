@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/lm-detector-page-bridge
+      - refactor/lm-detector-upstream-sdk-phase1
     paths:
       - .github/workflows/page-bridge.yml
       - internal/gui/pluginpage.go
@@ -15,6 +16,11 @@ on:
       - internal/plugin/tools.go
       - go.mod
       - go.sum
+      - internal/lmdetector/**
+      - internal/plugin/bundled.go
+      - internal/plugin/bundled_test.go
+      - internal/plugin/bundled-lm-detector/**
+      - .github/scripts/prepare-lm-detector.mjs
   pull_request:
     paths:
       - .github/workflows/page-bridge.yml
@@ -27,6 +33,11 @@ on:
       - internal/plugin/tools.go
       - go.mod
       - go.sum
+      - internal/lmdetector/**
+      - internal/plugin/bundled.go
+      - internal/plugin/bundled_test.go
+      - internal/plugin/bundled-lm-detector/**
+      - .github/scripts/prepare-lm-detector.mjs
   workflow_dispatch:
 
 permissions:
@@ -65,6 +76,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Prepare native detector offline reference data
+        run: node .github/scripts/prepare-lm-detector.mjs
 
       - name: Check Go formatting
         shell: bash
@@ -122,6 +136,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Makefile's release-windows target prepares the bank as well; do it
+      # explicitly here before building both GUI and standalone CLI artifacts.
+      - name: Prepare native detector offline reference data
+        run: node .github/scripts/prepare-lm-detector.mjs
+
+      # Verify the same offline references compiled into the Windows binaries.
+      - name: Verify native detector offline analysis before release
+        env:
+          CGO_ENABLED: '0'
+          LM_DETECTOR_REQUIRED: '1'
+        run: go test -tags nogui -count=1 ./internal/plugin -run '^TestPreparedBundleOfflineAnalysis$'
 
       - name: Build Windows GUI with icon and manifest
         env:

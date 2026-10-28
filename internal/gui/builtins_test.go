@@ -54,14 +54,14 @@ func TestBuiltinSwitch(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 			t.Fatal(err)
 		}
-		if len(out) != 14 {
+		if len(out) != 15 {
 			t.Fatalf("the built-ins: %+v", out)
 		}
 		for _, b := range out {
 			// the Gateway, Routing and Usage pages, the routing strategies,
 			// the gateway middleware, privacy masking, web search, key
 			// limits and plugin tools are essential: on in every preset
-			if b.On != (b.ID == "budget" || b.ID == "library" || b.ID == "gateway" || b.ID == "middleware" || b.ID == "redact" || b.ID == "rotation" || b.ID == "routing" || b.ID == "search" || b.ID == "tools" || b.ID == "usage") || b.On != (b.State == pluginrt.Active) {
+			if b.On != (b.ID == "budget" || b.ID == "library" || b.ID == "lm-detector" || b.ID == "gateway" || b.ID == "middleware" || b.ID == "redact" || b.ID == "rotation" || b.ID == "routing" || b.ID == "search" || b.ID == "tools" || b.ID == "usage") || b.On != (b.State == pluginrt.Active) {
 				t.Fatalf("after library on: %+v", out)
 			}
 		}
@@ -287,6 +287,21 @@ func TestBuiltinsTranslated(t *testing.T) {
 		}
 		block, _, _ = strings.Cut(block, "\n  },")
 		for _, m := range pluginrt.Registered() {
+			// A built-in with its own i18n.js may keep its words with
+			// its page rather than duplicating them in the core dictionary.
+			extra := ""
+			if m.ID == "lm-detector" {
+				words, err := os.ReadFile("assets/plugins/lm-detector/i18n.js")
+				if err != nil {
+					t.Fatal(err)
+				}
+				compact := strings.Replace(lang, ": {", ":{", 1)
+				_, extra, ok = strings.Cut(string(words), "\n "+compact+"\n")
+				if !ok {
+					t.Fatalf("lm-detector doesn't have %s translations", lang)
+				}
+				extra, _, _ = strings.Cut(extra, "\n },")
+			}
 			says := []string{m.Name, m.Sub, m.One, m.Many}
 			if sc := m.Schema(); sc != nil {
 				for _, p := range sc.Properties {
@@ -298,7 +313,7 @@ func TestBuiltinsTranslated(t *testing.T) {
 					continue
 				}
 				k, _ := json.Marshal(s)
-				if !strings.Contains(block, "\n    "+string(k)+": ") {
+				if !strings.Contains(block, "\n    "+string(k)+": ") && !strings.Contains(extra, string(k)+":") {
 					t.Errorf("%s doesn't say %s", lang, k)
 				}
 			}

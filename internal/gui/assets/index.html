@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="plugins/library/library.css">
 <link rel="stylesheet" href="plugins.css">
 <link rel="stylesheet" href="plugins/sessions/sessions.css">
+<link rel="stylesheet" href="plugins/lm-detector/detector.css">
 <link rel="stylesheet" href="plugins/redact/redact.css">
 <link rel="stylesheet" href="context.css">
 <link rel="stylesheet" href="omarchy.css">
@@ -57,6 +58,7 @@
     <span class="nav-gl" data-t>Insights</span>
     <button data-view="usage" data-feature="usage"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16V9M8 16V5M12 16v-5M16 16V7"/></g></svg><span data-t>Usage</span></button>
     <button data-view="masking" data-feature="redact"><svg class="nav-ic" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 1.8 13 3.6v4.1c0 3-2.1 5.4-5 6.5-2.9-1.1-5-3.5-5-6.5V3.6Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span data-t>Masking</span></button>
+    <button data-view="lm-detector" data-feature="lm-detector"><span data-t>Model fingerprint</span></button>
     <span class="nav-gl" data-t>Extend</span>
     <button data-view="plugins"><svg class="nav-ic" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.5h4v2.5a1.5 1.5 0 0 0 3 0V3.5h1.5v13H4v-4h2.5a1.5 1.5 0 0 0 0-3H4v-6z"/></g></svg><span data-t>Plugins</span></button>
   </nav>
@@ -479,6 +481,8 @@
 <script src="plugins/gateway/client.js"></script>
 <script src="plugins/sessions/i18n.js"></script>
 <script src="plugins/sessions/client.js"></script>
+<script src="plugins/lm-detector/i18n.js"></script>
+<script src="plugins/lm-detector/client.js"></script>
 <script src="plugins/library/i18n.js"></script>
 <script src="plugins/library/client.js"></script>
 <script src="plugins/routing/i18n.js"></script>

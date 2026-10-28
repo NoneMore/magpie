@@ -3,6 +3,7 @@ module github.com/yetone/magpie
 go 1.26.8
 
 require (
+	github.com/Ikaleio/lm-detector/sdk/go v0.2.0
 	github.com/Calcium-Ion/moejs v0.1.0-alpha.4
 	github.com/charmbracelet/bubbles v0.21.1
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -11,7 +12,7 @@ require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.18.3
+	github.com/klauspost/compress v1.18.4
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/jsonc v0.3.3
