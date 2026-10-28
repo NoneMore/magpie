@@ -5,10 +5,12 @@ import (
     "errors"
     "os"
     "path/filepath"
+    "strings"
     "testing"
     "testing/fstest"
     "io/fs"
 
+    lmfpd "github.com/Ikaleio/lm-detector/sdk/go"
     "github.com/yetone/magpie/internal/settings"
 )
 
@@ -111,34 +113,24 @@ func TestBundledMissingPreviousExtractionMigrates(t *testing.T) {
     }
 }
 
-func TestPreparedBundlePreservesLegacyRemoval(t *testing.T) {
+// The shipped native feature must work fully offline and must not reinstall
+// the superseded Bun registration on a fresh installation.
+func TestPreparedBundleOfflineAnalysis(t *testing.T) {
     if _, err := lmDetectorFiles.ReadFile("bundled-lm-detector/runtime/data/unified_bank.json"); err != nil {
         if os.Getenv("LM_DETECTOR_REQUIRED") == "1" { t.Fatal(err) }
         t.Skip("reference assets are not prepared")
     }
     storeSandbox(t)
-    root := filepath.Join(settings.Dir(), "bundled", "lm-detector")
-    if err := os.MkdirAll(root, 0o700); err != nil { t.Fatal(err) }
-    if err := os.WriteFile(filepath.Join(root, ".registered"), []byte("registered\n"), 0o600); err != nil { t.Fatal(err) }
-    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
-    if err := os.RemoveAll(root); err != nil { t.Fatal(err) }
-    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
-    if got := Load().Plugins; len(got) != 0 { t.Fatalf("resurrected previously removed plugin: %+v", got) }
-    if _, err := os.Stat(filepath.Join(settings.Dir(), "bundled-lm-detector.registered")); err != nil { t.Fatal(err) }
-}
-
-func TestPreparedBundleBootstrap(t *testing.T) {
-    if _, err := lmDetectorFiles.ReadFile("bundled-lm-detector/runtime/data/unified_bank.json"); err != nil {
-        if os.Getenv("LM_DETECTOR_REQUIRED") == "1" { t.Fatalf("build preparation missing: %v", err) }
-        t.Skip("build-time reference assets have not been prepared in this source checkout")
+    dir, err := BundledLMDetectorDataDir()
+    if err != nil { t.Fatal(err) }
+    detector, err := lmfpd.Load(context.Background(), lmfpd.LoadOptions{Sources: []string{dir}})
+    if err != nil { t.Fatalf("load embedded offline reference data: %v", err) }
+    output := strings.TrimSuffix(strings.Repeat("199, ", 300), ", ")
+    a, err := detector.Analyze([]lmfpd.Output{{Text: output, ExpectedCount: 300}}, false)
+    if err != nil || a == nil { t.Fatalf("offline reference analysis failed: %v", err) }
+    if got := Load().Plugins; len(got) != 0 {
+        t.Fatalf("native reference extraction must not register Bun plugin: %+v", got)
     }
-    storeSandbox(t)
-    if err := EnsureBundledLMDetector(); err != nil { t.Fatal(err) }
-    l := Load()
-    if len(l.Plugins) != 1 { t.Fatalf("want one auto-registered plugin: %+v", l.Plugins) }
-    if filepath.Base(l.Plugins[0].Spec) != "lm-detector" { t.Fatalf("unstable plugin spec: %+v", l.Plugins[0]) }
-    w, _ := Window(Target(l.Plugins[0].Spec))
-    if w == nil || w.Page == nil || len(w.Actions) != 1 { t.Fatalf("missing Page/Provider action in bundled plugin: %+v", w) }
 }
 
 func TestBundledRemovedSkipsExtraction(t *testing.T) {
