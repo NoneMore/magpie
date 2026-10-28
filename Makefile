@@ -86,12 +86,13 @@ icons:
 		--minimum-deployment-target 11.0 --app-icon AppIcon --output-partial-info-plist build/darwin/actool/partial.plist >/dev/null
 	@mv build/darwin/actool/Assets.car build/darwin/Assets.car && rm -rf build/darwin/actool
 
-release: clean build
+release: clean prepare-lm-detector
+	@$(MAKE) --no-print-directory build
 	@mkdir -p dist
 	@cp magpie dist/magpie-$(shell go env GOOS)-$(shell go env GOARCH)
 	@$(MAKE) --no-print-directory release-cli
 
-release-cli:
+release-cli: prepare-lm-detector
 	@mkdir -p dist
 	@for t in $(TARGETS); do \
 		os=$${t%/*}; arch=$${t#*/}; ext=""; [ $$os = windows ] && ext=.exe; \
@@ -118,7 +119,7 @@ release-windows: prepare-lm-detector
 
 # The desktop app for Linux links GTK 3 and WebKitGTK 4.1 through cgo, so it
 # is built natively, one arch per machine.
-release-linux:
+release-linux: prepare-lm-detector
 	@mkdir -p dist
 	@echo "  linux/$(shell go env GOARCH) (app)"
 	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-linux-$(shell go env GOARCH) .
