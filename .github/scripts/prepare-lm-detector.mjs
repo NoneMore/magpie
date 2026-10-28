@@ -8,7 +8,12 @@ import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const plugin = path.join(root, "plugins", "lm-detector");
+// Verified npm lmfpd data assets paired with the Go SDK v0.2.0.
 const version = "0.0.1792416845676";
+const expectedSHA256 = Object.freeze({
+  "unified_bank.json": "c53d2e446a2c099fa584736fa54356dbdec23cae49130fa504bfb8844466b53a",
+  "shared_detector.bin": "9117330f225a525d39d75db2616e90657e6b5d9ea1af46770389530de0a418fe",
+});
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 execFileSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund",
   "--no-save", "--no-package-lock", "lmfpd@" + version], {cwd: plugin, stdio: "inherit", shell: process.platform === "win32"});
@@ -22,7 +27,10 @@ for (const name of ["unified_bank.json", "shared_detector.bin"]) {
   const size = (await stat(from)).size;
   if (size < 1024 * 1024) throw Error("lmfpd reference asset is unexpectedly small: " + name);
   const digest = createHash("sha256").update(await readFile(from)).digest("hex");
-  console.log("Reference SHA256 " + name + ": " + digest);
+  if (digest !== expectedSHA256[name]) {
+    throw Error("LM Detector reference SHA256 mismatch for " + name + ": " + digest);
+  }
+  console.log("Verified reference SHA256 " + name + ": " + digest);
   await copyFile(from, path.join(dest, name));
   console.log("Bundled " + name + " (" + size + " bytes) from lmfpd@" + version);
 }
