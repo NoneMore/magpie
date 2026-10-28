@@ -62,10 +62,18 @@ magpie.plugin("lm-detector", (ctx) => {
       bar.max=s.expectedCount;bar.value=s.count;
       if(s.state==="waiting")bar.removeAttribute("value");
       row.append(label,bar);
-      if(s.durationMs!=null){
-        const time=document.createElement("small");
-        time.textContent=(s.durationMs/1000).toFixed(1)+"s";
-        row.append(time);
+      if(s.firstByteMs!=null || s.durationMs!=null){
+        const metrics=document.createElement("small");
+        const parts=[];
+        if(s.firstByteMs!=null)parts.push("TTFT "+(s.firstByteMs/1000).toFixed(2)+"s");
+        if(s.durationMs!=null)parts.push((s.durationMs/1000).toFixed(1)+"s");
+        if(s.firstByteMs!=null && s.startedAt!=null && s.count>0){
+          const elapsed=(s.durationMs??Math.max(0,Date.now()-s.startedAt))-s.firstByteMs;
+          if(elapsed>0)parts.push((s.count*1000/elapsed).toFixed(1)+" numbers/s");
+        }
+        // This is integer output speed, not token throughput (TPS).
+        metrics.textContent=parts.join(" · ");
+        row.append(metrics);
       }
       if(s.error){const e=document.createElement("small");e.textContent=s.error;row.append(e);}
       return row;
@@ -113,7 +121,7 @@ magpie.plugin("lm-detector", (ctx) => {
       const job=await call("status",{jobId:id});
       if(running!==id)return;
       render(job);
-      if(running)pollTimer=setTimeout(poll,1000);
+      if(running)pollTimer=setTimeout(poll,300);
     }catch(e){running="";say(e.message);picks();}
   }
   async function run() {
