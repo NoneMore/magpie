@@ -1,31 +1,32 @@
-# LM Detector — native Magpie Go built-in (draft)
+# LM Detector — native Magpie Go built-in
 
-The fingerprint detector has been moved to the `plugins/lm-detector` built-in plugin registered through `internal/pluginrt`. Its model-fingerprint engine is now the pinned upstream **Go SDK** (`github.com/Ikaleio/lm-detector/sdk/go`); the native management endpoints and job manager live under `internal/lmdetector` and the embedded first-party window page is under `internal/gui/assets/plugins/lm-detector`.
+The model fingerprint detector uses the pinned upstream [Go SDK v0.2.0](https://github.com/Ikaleio/lm-detector/tree/sdk/go/v0.2.0/sdk/go) through Magpie's `internal/pluginrt`. The native lifecycle, bounded job manager and HTTP routes are in `internal/lmdetector`; the built-in page lives under `internal/gui/assets/plugins/lm-detector`. The native feature **does not execute** the legacy Bun detector.
 
-The native detector does not run `fpd` or the old Bun Page/tool backend. The Gateway key is kept on the Go side, and only direct `provider/model` IDs in the Gateway's `/v1/models` listing may be checked. It offers Chat/Responses, streaming or JSON, count 1–3, parallel 1–3, strict (3/3), repeat 1–20, reasoning effort and per-request timeout. At most two jobs run concurrently, jobs are in memory, and turning the built-in off cancels active work.
+The Gateway credential stays in Go and never reaches the page or the SDK's temporary local adapter: an unpredictable per-job bearer token authenticates the loopback transport. Only direct Gateway `provider/model` IDs from `/v1/models` can be checked; `auto/`, `group/`, and `routing/` groups are refused. Supported options: Responses/Chat, JSON/SSE, 1–3 challenges per round, parallel 1–3, strict 3/3, 1–20 rounds, reasoning effort and configurable timeouts. Only two jobs can execute concurrently, and turning the built-in Off cancels running and pending starts. Closing/restarting Magpie does not persist jobs.
+
+## Live sampling and result limits
+
+The SDK `Detector.Detect(ctx, config, OnSample(callback))` reports queued, waiting, streaming integer counts and settled samples, with `first_byte_ms`. The page polls the native status endpoint and displays the progress, TTFT and **integer output rate (numbers/s)** where available. Integer rate is *not* token throughput (TPS), which cannot be calculated accurately without token usage. Full raw outputs/keys are not exposed by the status API.
+
+The SDK's default HTTP reader remains unbounded, so Magpie retains a short-lived authenticated loopback adapter that caps the **entire** Gateway sampling response to 1 MiB and any unfinished SSE frame to 256 KiB. A round Context deadline also bounds the lifetime of streams that drip bytes forever. The SDK still performs challenge creation, parsing and scoring. Only the 20 highest-ranked candidates per analysis are sent to the page; SDK calculations are not truncated.
 
 ## Build and offline reference data
 
-Before `go build`, run `node .github/scripts/prepare-lm-detector.mjs`. This build-time-only command fetches pinned paired `unified_bank.json` and `shared_detector.bin` data and stages them in the existing Go embedded bundle. The Go SDK opens **only** the extracted local reference directory through `LoadOptions.Sources`; it does not fetch reference data at user runtime. The existing content-addressed extraction validates its payload and refuses corrupted files.
+Run `node .github/scripts/prepare-lm-detector.mjs` before direct `go build`. The script pins `lmfpd@0.0.1792416845676`, checks both upstream asset SHA-256 values against audited constants, and stages **only** `unified_bank.json` and `shared_detector.bin` in the Go embed. The old Bun executor, Page and shared JavaScript are **not packaged in the binary**. Go SDK `LoadOptions.Sources` points to the extracted local reference directory; no runtime download occurs. `make release-windows` prepares data automatically.
 
-The obsolete JS implementation remains in the repository **only for the existing compatibility tests and build-time asset staging** during this draft. The runtime no longer installs it for new users. A one-time migration removes registered legacy entries from `plugins.json` and carries forward their Off or explicitly uninstalled state into `plugins.yml`; unrelated entries are not touched. See [tracking issue #9](https://github.com/NoneMore/magpie/issues/9).
+The legacy source-level Bun tests are retained for comparison during migration but are not shipped or invoked by the native detector. Legacy registration entries in `plugins.json` are precisely retired without disturbing other plugins; the new built-in is independently managed in `plugins.yml` (old Off/uninstall preference is intentionally **not** mapped over). See [tracking issue #9](https://github.com/NoneMore/magpie/issues/9).
 
 ## Native local API
 
-All endpoints are in the same auth boundary as other Magpie UI APIs:
+The routes are within Magpie's existing authenticated UI boundary and additionally enforce same-origin requests and JSON Content-Type:
 
-- `POST /api/lm-detector/models` — list available direct Gateway models.
-- `POST /api/lm-detector/start` — create a job using the JSON options above.
-- `POST /api/lm-detector/status` — read job status using `{"jobId":"..."}`.
-- `POST /api/lm-detector/cancel` — cancel an active job.
+- `POST /api/lm-detector/models` — list direct Gateway models
+- `POST /api/lm-detector/start` — start a job with the options above
+- `POST /api/lm-detector/status` — status with `{"jobId":"..."}`
+- `POST /api/lm-detector/cancel` — cancel a job
 
-## Known gaps before marking this PR ready for review
+## Verification
 
-- The upstream Go `RequestSample` only returns when an HTTP sample finishes; therefore this initial Go UI can show queued, waiting and completed samples, but **not token-by-token integer progress, TTFT or tokens/sec**. Do not remove the old tests that assert these until an upstream callback or a native adapter restores equivalent behavior.
-- Provider row right-click action needs native menu integration; the new built-in page currently offers a Provider/Model picker but no row action.
-- The old Bun source/artifacts and old compatibility tests still need to be retired after native parity tests cover all cases.
-- Compilation/CI and live-provider UI parity still need verification. The PR remains a **draft** until those checks pass.
+The dedicated CI prepares verified offline assets, tests SDK v0.2.0 sampling against mock Gateway responses (Chat/Responses × JSON/SSE), live SSE progress, cancellation, same-origin protections, size limits and offline `Analyze`, then runs the preserved Bun regression tests. The Page Bridge Windows path also prepares and checks embedded references before creating its binaries.
 
-## Security
-
-Non-loopback Gateway URLs must be HTTPS and explicitly supply `MAGPIE_FPD_GATEWAY_KEY`. Local loopback uses the previous `magpie` default when no key is set. Keys never enter browser JavaScript or the detector's result JSON. Fingerprinting sends paid model requests and its closed-set ranking is not proof of identity.
+The Provider-row context-menu action and Chromium/WebKit native UI behavior still require browser-level validation; CI results should be checked before marking the PR ready. Detection makes paid API calls and **closed-set fingerprint rankings do not prove a model's identity**.
