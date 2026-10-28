@@ -102,15 +102,15 @@ func boundedSamplingGateway(cfg lmfpd.DetectConfig) (lmfpd.DetectConfig, func(),
 						for _, item := range parts {
 							part, _ := item.(map[string]any)
 							if value, ok := part["text"].(string); ok {
-							text.WriteString(value)
-						}
+								text.WriteString(value)
+							}
 						}
 						message["content"] = text.String()
 					}
 				}
-					if encoded, err := json.Marshal(payload); err == nil && len(encoded) <= maxSamplingResponse {
-						data = encoded
-					}
+				if encoded, err := json.Marshal(payload); err == nil && len(encoded) <= maxSamplingResponse {
+					data = encoded
+				}
 			}
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(data)
