@@ -18,7 +18,6 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/proc"
-	"github.com/yetone/magpie/internal/settings"
 )
 
 // A ChatGPT account's requests are made the way Codex CLI makes them, as
@@ -51,14 +50,6 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		}
 		req.Header.Set("Accept", "text/event-stream")
 		sessionHeaders(req.Header, body)
-		if settings.Shared().CodexCallerPrompt &&
-			req.Context().Value(codexNativePassthroughKey{}) == nil &&
-			req.Context().Value(codexCallerSessionSignedKey{}) == nil {
-			if callerSessionHeaders(req.Header, body) {
-				// Remember this request, not the key sent to the backend.
-				*req = *req.WithContext(context.WithValue(req.Context(), codexCallerSessionSignedKey{}, true))
-			}
-		}
 		return nil
 	}
 }
@@ -87,53 +78,6 @@ func sessionHeaders(h http.Header, body []byte) {
 var codexUA struct {
 	sync.Once
 	os string
-}
-
-type codexCallerSessionSignedKey struct{}
-
-// codexNativePassthroughKey marks a native Codex relay. It does not go through
-// codexBody, so its existing session and thread IDs must not be rewritten.
-type codexNativePassthroughKey struct{}
-
-// WithNativeCodexPassthrough marks a request relayed without codexBody.
-func WithNativeCodexPassthrough(ctx context.Context) context.Context {
-	return context.WithValue(ctx, codexNativePassthroughKey{}, true)
-}
-
-// callerCacheKey isolates the caller-owned prompt's cache without changing
-// its identity between turns.
-func callerCacheKey(key string) string {
-	hash := sha256.Sum256([]byte("codex-caller-prompt\x00" + key))
-	id := hex.EncodeToString(hash[:])
-	return id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
-}
-
-// callerSessionHeaders partitions a caller-owned, keyless request's existing
-// session identity. Without a cache key, codexBody cannot use the session
-// headers because it only receives the body. This runs after sessionHeaders
-// and never fabricates a session for requests with no session headers.
-func callerSessionHeaders(h http.Header, body []byte) bool {
-	var v struct {
-		Key          string `json:"prompt_cache_key"`
-		Instructions string `json:"instructions"`
-		Model        string `json:"model"`
-	}
-	if json.Unmarshal(body, &v) != nil || v.Key != "" || strings.TrimSpace(v.Instructions) == "" ||
-		v.Instructions == codexInstructions(v.Model) {
-		// An empty original caller prompt was already replaced by the
-		// native one, and must retain the native session identity.
-		return false
-	}
-	// Preserve distinct session and thread identities for callers that
-	// supplied both; unlike body keys, their two headers need not agree.
-	changed := false
-	for _, name := range []string{"session-id", "thread-id"} {
-		if key := h.Get(name); key != "" {
-			h.Set(name, callerCacheKey(key))
-			changed = true
-		}
-	}
-	return changed
 }
 
 // codexUserAgent is the User-Agent Codex CLI of version v sends:
@@ -300,10 +244,11 @@ func codexInstructions(model string) string {
 	return codexcat.Prompt
 }
 
-// codexBody makes a Responses request for the built-in Codex account. By
-// default it keeps the native Codex instructions and puts the caller's
-// instructions first in input. This personal fork can opt into caller-owned
-// instructions without changing its other Codex request adaptations.
+// codexBody makes a Responses request the one Codex CLI would send: it
+// streams only, keeps nothing (so its items carry no ids), carries Codex's
+// instructions — the client's own riding first in the input — and rejects
+// the sampling knobs, explicit cache options and any service tier but
+// Fast's and Ultrafast's.
 func codexBody(body []byte) []byte {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -332,27 +277,17 @@ func codexBody(body []byte) []byte {
 	input, _ := m["input"].([]any)
 	input = codexInput(input)
 	own, _ := m["instructions"].(string)
-	// Explicit personal-fork opt-in; empty caller instructions still use
-	// Codex's native prompt. No plugin or extra request-body pass is needed.
-	callerPrompt := settings.Shared().CodexCallerPrompt && strings.TrimSpace(own) != ""
 	if k, _ := m["prompt_cache_key"].(string); k == "" {
 		if k = conversationKey(own, input); k != "" {
 			m["prompt_cache_key"] = k
 		}
 	}
-	// The two prompt policies must not share Codex's session headers/cache,
-	// including when the client supplies its own prompt_cache_key.
-	if callerPrompt {
-		if key, _ := m["prompt_cache_key"].(string); key != "" {
-			m["prompt_cache_key"] = callerCacheKey(key)
-		}
-	}
 
-	// Keep independent developer messages unchanged. Only the original
-	// top-level caller instructions can replace Codex's native prompt.
+	// the client's instructions go first as a developer message, Codex's
+	// in their place — unless they are Codex's, from Codex itself
 	codex := codexInstructions(model)
 	if strings.TrimSpace(own) != "" {
-		if callerPrompt || firstLine(own) == firstLine(codex) {
+		if firstLine(own) == firstLine(codex) {
 			codex = own
 		} else {
 			input = append([]any{map[string]any{"type": "message", "role": "developer",

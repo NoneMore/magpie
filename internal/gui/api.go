@@ -391,8 +391,6 @@ type settingsJSON struct {
 	// NoAccountsEnv is MAGPIE_NO_ACCOUNTS set, which keeps account
 	// discovery off for this run whatever Settings has (#1535)
 	NoAccountsEnv bool `json:"noAccountsEnv,omitempty"`
-	// Effective Codex caller-prompt setting shown by the agent's UI.
-	CodexCallerPromptOn bool `json:"codexCallerPromptOn"`
 	// whether the page is in gateway mode and why (gatewayMode); Web says
 	// it is served by magpie web, where the mode can be set
 	GatewayOn  bool   `json:"gatewayOn,omitempty"`
@@ -639,7 +637,6 @@ func settingsState() settingsJSON {
 	}
 	s.ProxyNow, s.ProxySource = netproxy.Describe()
 	s.NoAccountsEnv = settings.AccountDiscoveryOff() && !s.NoAccountDiscovery
-	s.CodexCallerPromptOn = s.CodexCallerPrompt
 	for _, name := range []string{"MAGPIE_OTEL_ENABLED", "MAGPIE_OTEL_ENDPOINT", "MAGPIE_OTEL_HEADERS", "MAGPIE_OTEL_METRICS", "MAGPIE_OTEL_BODIES", "MAGPIE_OTEL_BODIES_WHOLE", "MAGPIE_OTEL_SESSIONS"} {
 		if _, ok := os.LookupEnv(name); ok {
 			s.OTelEnv = true
@@ -1299,9 +1296,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.PlainNames, in.PlainOwnNames = cur.PlainNames, cur.PlainOwnNames
 		in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids below)
 		in.CodexAgentsV1 = cur.CodexAgentsV1
-		in.CodexCallerPrompt = cur.CodexCallerPrompt // own opt-in endpoint
-		in.FullContext = cur.FullContext             // set on its own (full-context below)
-		in.CompactAt = cur.CompactAt                 // and so is the threshold
+		in.FullContext = cur.FullContext // set on its own (full-context below)
+		in.CompactAt = cur.CompactAt     // and so is the threshold
 		// Codex's background compaction, set on its own (codex-async-compact below)
 		in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 		// Claude Desktop's list, set in its row on the Agents page
@@ -1522,25 +1518,6 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
-	// Personal-fork Codex instruction policy, saved for subsequent requests.
-	mux.HandleFunc("POST /api/settings/codex-caller-prompt", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct {
-			On *bool `json:"on"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			fail(rw, err)
-			return
-		}
-		if in.On == nil {
-			fail(rw, fmt.Errorf("on must be a boolean"))
-			return
-		}
-		if err := settings.SetCodexCallerPrompt(*in.On); err != nil {
-			fail(rw, err)
-			return
-		}
-		writeJSON(rw, settingsState())
-	})
 	// the Agents page's Get started card put away, or back (GuideHidden)
 	mux.HandleFunc("POST /api/settings/guide", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Hidden bool }
@@ -1719,7 +1696,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		v := strings.TrimSpace(in.Model)
-		if v != "" {
+		if v != "" && v != settings.CodexAutoReviewSession {
 			// Resolve intentionally accepts arbitrary names under a known
 			// provider. An approval reviewer must be a model or group magpie
 			// actually lists, including providers kept unlisted for routing.
@@ -2455,8 +2432,9 @@ func state() stateJSON {
 		if a.Import != nil {
 			aj.Import = a.Import()
 			if a.Added != nil {
-				added := a.Added()
-				aj.Added = &added
+				if added, known := a.Added(); known {
+					aj.Added = &added
+				}
 			}
 		}
 		if a.Launch != nil {

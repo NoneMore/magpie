@@ -158,7 +158,6 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		PlainOwnNames:        true,
 		BareModelIDs:         true,
 		CodexAgentsV1:        true,
-		CodexCallerPrompt:    true,
 		CodexTitles:          "off",
 		CodexDescriptions:    "fake/m1",
 		CodexPredictions:     "off",

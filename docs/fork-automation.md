@@ -17,8 +17,8 @@
 ## Fast Windows quality gate
 The shared script is .github/scripts/test-windows.ps1. It runs:
 1. go vet ./... and a compile-only pass over all Go tests using go test -run '^$' ./...
-2. Actual isolated fork tests: Codex caller prompt, settings retention, GUI Page
-   bridge permissions and origin checks, plugin runtime/import rules.
+2. Actual isolated fork tests: settings retention, GUI Page bridge permissions
+   and origin checks, plugin runtime/import rules, and native Codex regressions.
    `TestCoreScriptBudget` is intentionally **not** run: it checks the
    product's JS size budget, not functional behavior; custom plugin/bridge
    JavaScript is allowed to increase that budget.
@@ -61,3 +61,10 @@ installed lmfpd reference-data package; they are not part of the daily gate.
 
 If permissions fail, check Settings > Actions > General > Workflow
 permissions and any main branch protection rules.
+
+## Archived experiment: Codex Caller Prompt
+The fork's optional caller-owned Codex instructions policy was retired from
+`main` on 2026-10-26. Its complete pre-removal state is preserved at
+`archive/codex-caller-prompt-2026-10-26` for reference or restoration.
+Use Magpie's built-in **ChatGPT API** provider for the intended workflow
+without rewriting the Codex subscription's native instructions.

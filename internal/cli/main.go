@@ -321,6 +321,7 @@ func run(args []string) error {
 	// for on a model of its own, on the model of magpie's picked beside
 	// its ChatGPT sign-in rather than on that account (atom_Ray on X)
 	gateway.CodexSideModel = agent.CodexSideModel
+	gateway.CodexSideSet = agent.CodexSideSet
 	// the setup kept the same on every computer, by whichever serves
 	gateway.WhileServing = append(gateway.WhileServing, davsync.Run)
 	// and dsh's patch lists, which dsh reads live: a route left behind by
@@ -727,7 +728,13 @@ func list(agents []*agent.Agent, detectedOnly bool, dimFrom int) error {
 				r.vals += label.Render("  ·  " + said)
 			}
 			if a.Import != nil {
-				if a.Added != nil && a.Added() {
+				// unknown reads as not added here: the line only offers the
+				// command, never says magpie is missing
+				added := false
+				if a.Added != nil {
+					added, _ = a.Added()
+				}
+				if added {
 					r.vals = value.Render("magpie added")
 				} else {
 					r.vals = label.Render("magpie "+a.ID+" add") + faint.Render("  to add magpie")

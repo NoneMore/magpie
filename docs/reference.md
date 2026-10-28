@@ -333,7 +333,7 @@ magpie provider models deepseek         # re-fetch the vendor's list (add ids to
 magpie provider models deepseek +deepseek-v4 -deepseek-chat   # expose one more, take one out; the rest stay
 magpie provider models deepseek a b c   # the whole list of models to expose, replacing it (all: the default)
 magpie provider refresh deepseek        # re-fetch it, and drop picks it no longer has (the TUI: m)
-magpie provider refresh-every relay 6h  # the gateway fetches its list every 6h (1d, 30m; off; at least 10m)
+magpie provider refresh-every relay 6h  # the gateway fetches its list every 6h (1d, 30m; off; at least 10m; a Remote magpie 10m unless set)
 magpie provider auto-include relay 'gpt-*' 're:claude-.*'  # a newly listed model these match is exposed (none clears)
 magpie provider test deepseek           # one tiny request per API, with latency
 magpie provider key deepseek sk-…       # replace the key
@@ -2055,7 +2055,25 @@ else `magpie-goroutines-<date>-<time>.txt` in the working folder, never
 over a file there, and prints the file and the process the gateway names in
 `X-Magpie-Goroutine-Stats` (its id, program, version, uptime and goroutine
 count). The route answers the same callers as `/v1/magpie/heap`, and
-refuses the same ones 403.
+refuses the same ones 403. It answers ahead of everything else a request
+passes through first (the allow list, which reads settings.json under its
+lock, and the catalog and file holds), so it still answers when those, or
+`/v1/models` and agents' requests behind them, are stuck, and the dump
+names who holds them.
+
+The app doesn't put `magpie` on a terminal's PATH unless Settings →
+Command line is used to put it there; until then, run the app's own
+program, which takes every command. On macOS:
+`/Applications/magpie.app/Contents/MacOS/magpie goroutines`. On Windows,
+in PowerShell, the app as it last started (it records its path for
+`start magpie`):
+`& (Get-ItemPropertyValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\magpie.exe' '(default)') goroutines | Out-Host`.
+`| Out-Host` has PowerShell wait for the app's program, which is built
+without a console of its own, and print what it says. The same goes for
+`magpie heap` and `magpie cpu`. A portable copy (a `.portable` file or
+a `data` folder beside it) records no path, and a copy moved since its
+last start leaves the old one: run the program where it is, such as
+`& "$HOME\Downloads\magpie-windows-amd64.exe" goroutines | Out-Host`.
 
 A gateway key held to a budget, to some models or to some accounts is told
 none of this magpie's accounts (#1981): `/v1/magpie/quotas`,
@@ -2809,10 +2827,23 @@ MAGPIE_OTEL_ENABLED=true MAGPIE_OTEL_ENDPOINT=http://localhost:4318 magpie serve
   keeps them entire rather than cut at 256 KB. A long reply is written to a
   temporary file; a body too large for the collector is still refused.
 
-For Langfuse, use `https://<your-langfuse-host>/api/public/otel` as the base
-URL and `Authorization=Basic%20<base64(public-key:secret-key)>` as the header.
-Leave metrics off. This uses Langfuse's OTLP ingestion endpoint. For Langfuse
-v4, add the header `x-langfuse-ingestion-version=4` for real-time ingestion.
+For Langfuse, pick **Collector › Langfuse**, then the host (Cloud EU
+`https://cloud.langfuse.com`, Cloud US `https://us.cloud.langfuse.com`, or
+**Self-hosted** with your own address, which also takes another Langfuse
+Cloud region such as `https://jp.cloud.langfuse.com`) and the project's public
+and secret keys (Langfuse › Settings › API Keys). magpie saves them as the
+endpoint `<host>/api/public/otel` and the header
+`Authorization: Basic <base64(public-key:secret-key)>`, kept with the other
+OTLP headers (left out of a backup without keys). Nothing is saved until both
+keys are there. A first setup also adds `x-langfuse-ingestion-version: 4`
+(Langfuse's docs: without it, OTLP data can show up to 10 minutes late), turns
+metrics off, since Langfuse takes traces only, and turns export on. A Langfuse
+endpoint set up by hand opens in this view with its keys filled in, and
+changing a key or the host keeps every other header and the metrics and
+export choices as they were. Switching from another collector leaves that
+collector's headers behind. For `magpie serve`, the same values go in the
+environment: `MAGPIE_OTEL_ENDPOINT=https://cloud.langfuse.com/api/public/otel`
+and `MAGPIE_OTEL_HEADERS=Authorization=Basic%20<base64(public-key:secret-key)>,x-langfuse-ingestion-version=4`.
 
 Traces include agent, provider, model, token counts (including cache and
 reasoning), HTTP status, timing, and route ID. Attempts with the same route ID

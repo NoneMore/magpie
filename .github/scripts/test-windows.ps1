@@ -17,13 +17,13 @@ Write-Host '=== Offline bundle bootstrap and migration regressions ==='
 go test -count=1 ./internal/plugin -run '^(TestBundled|TestMaterialize|TestPreparedBundle)'
 if ($LASTEXITCODE -ne 0) { throw 'bundled plugin registration failed' }
 
-Write-Host '=== Fork Codex, GUI and plugin permission regressions ==='
+Write-Host '=== Fork GUI, native Codex and plugin permission regressions ==='
 # Deliberately do not execute TestCoreScriptBudget: this is an upstream
 # product-size policy, not a Windows correctness test; fork Page Bridge
 # adds intended script bytes.
-go test -count=1 -timeout 5m ./internal/provider -run '^(TestCodexBodyCallerPromptOptIn|TestCodexCallerPromptSessionHeadersWithoutKey|TestCodexSignSessionHeaders|TestCodexPromptCacheKey)$'
+go test -count=1 -timeout 5m ./internal/provider -run '^(TestCodexSignSessionHeaders|TestCodexPromptCacheKey)$'
 if ($LASTEXITCODE -ne 0) { throw 'Codex regression failed' }
-go test -count=1 -timeout 5m ./internal/gui -run '^(TestCodexCallerPromptPreferenceAPI|TestSettingsSaveKeepsWhatItDoesNotSend|TestPluginPageServedShutIn|TestPluginPageReadsWhatItDeclared|TestPluginPageNoAPI|TestPluginPageWebGuard|TestPluginPageActions|TestPluginPageToolRequiresPermission)$'
+go test -count=1 -timeout 5m ./internal/gui -run '^(TestSettingsSaveKeepsWhatItDoesNotSend|TestPluginPageServedShutIn|TestPluginPageReadsWhatItDeclared|TestPluginPageNoAPI|TestPluginPageWebGuard|TestPluginPageActions|TestPluginPageToolRequiresPermission)$'
 if ($LASTEXITCODE -ne 0) { throw 'GUI / Page bridge regression failed' }
 go test -count=1 -timeout 5m ./internal/pluginrt -run '^(TestReconcile|TestCompatible|TestPluginsImportOnlyCore)$'
 if ($LASTEXITCODE -ne 0) { throw 'Plugin runtime regression failed' }
