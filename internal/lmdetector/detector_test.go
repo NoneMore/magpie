@@ -309,7 +309,7 @@ func TestPaidRoutesEnforceSameOrigin(t *testing.T) {
 
 func TestBoundedSamplingProxyCapsJSONAndSSE(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name  string
 		media string
 		bytes int
 		limit int
