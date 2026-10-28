@@ -54,7 +54,8 @@ foreach ($asset in @(
   'internal/gui/assets/plugins.js',
   'internal/gui/assets/pluginpages.js',
   'internal/gui/pagebridge.js',
-  'plugins/lm-detector/index.js'
+  'internal/gui/assets/plugins/lm-detector/client.js',
+  'internal/gui/assets/plugins/lm-detector/i18n.js'
 )) {
   node --check $asset
   if ($LASTEXITCODE -ne 0) { throw "JavaScript syntax failed: $asset" }
