@@ -1,6 +1,6 @@
 // Native LM Detector page: no iframe, Bun host or credential access.
 magpie.plugin("lm-detector", (ctx) => {
-  let root, models=[], provider="", model="", format="responses", running="";
+  let root, models=[], provider="", model="", format="responses", running="", starting=false;
   let pollTimer=0, loaded=false, pinnedProvider=false, selectedRound=0, lastJob=null;
   const ui=ctx.ui;
   const find=(name)=>root.querySelector('[data-fpd="'+name+'"]');
@@ -12,6 +12,7 @@ magpie.plugin("lm-detector", (ctx) => {
     place.replaceChildren(ui.menu(options.map(x=>({v:x.v,name:x.name})),current,name,choose));
   };
   function picks() {
+    const busy=starting||!!running;
     const providers=groups();
     // A provider row action must never silently redirect a paid run to another provider.
     if(!pinnedProvider && !providers.includes(provider))provider=providers[0]||"";
@@ -24,14 +25,14 @@ magpie.plugin("lm-detector", (ctx) => {
     if(!list.includes(model))model=list[0]||"";
     setMenu("model",list.map(v=>({v,name:v.slice(provider.length+1)})),model,v=>{model=v;});
     setMenu("format",[{v:"responses",name:"Responses"},{v:"chat",name:"Chat Completions"}],format,v=>{format=v;});
-    find("run").disabled=!model||!!running;
-    for(const el of root.querySelectorAll("input"))el.disabled=!!running;
+    find("run").disabled=!model||busy;
+    for(const el of root.querySelectorAll("input"))el.disabled=busy;
     const strict=find("strict");
     if(Number(find("count").value)!==3){strict.checked=false;strict.disabled=true;}
-    for(const key of ["provider","model","format","reload"])find(key).querySelectorAll("button").forEach(b=>b.disabled=!!running);
+    for(const key of ["provider","model","format","reload"])find(key).querySelectorAll("button").forEach(b=>b.disabled=busy);
   }
   async function load() {
-    if(running)return;
+    if(starting||running)return;
     say(t("Reading Gateway models…"));
     try{
       const answer=await call("models");
@@ -125,12 +126,14 @@ magpie.plugin("lm-detector", (ctx) => {
     }catch(e){running="";say(e.message);picks();}
   }
   async function run() {
-    if(running||!model)return;
+    if(starting||running||!model)return;
+    // Set this before the first await: Start is paid and the server allows two jobs.
+    starting=true;picks();
     try{
       const job=await call("start",options());
-      running=job.jobId;selectedRound=0;lastJob=null;picks();render(job);
+      running=job.jobId;starting=false;selectedRound=0;lastJob=null;picks();render(job);
       await poll();
-    }catch(e){say(e.message);picks();}
+    }catch(e){starting=false;say(e.message);picks();}
   }
   async function cancel(){
     if(!running)return;
