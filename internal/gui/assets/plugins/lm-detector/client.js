@@ -66,13 +66,14 @@ magpie.plugin("lm-detector", (ctx) => {
       if(s.firstByteMs!=null || s.durationMs!=null){
         const metrics=document.createElement("small");
         const parts=[];
-        if(s.firstByteMs!=null)parts.push("TTFT "+(s.firstByteMs/1000).toFixed(2)+"s");
+        if(s.firstByteMs!=null)parts.push((job.stream?"First byte ":"Response ready ")+(s.firstByteMs/1000).toFixed(2)+"s");
         if(s.durationMs!=null)parts.push((s.durationMs/1000).toFixed(1)+"s");
-        if(s.firstByteMs!=null && s.startedAt!=null && s.count>0){
-          const elapsed=(s.durationMs??Math.max(0,Date.now()-s.startedAt))-s.firstByteMs;
-          if(elapsed>0)parts.push((s.count*1000/elapsed).toFixed(1)+" numbers/s");
+        // Use the entire observed sample lifetime for an honest average.
+        // First SSE bytes can be heartbeat/metadata, not first content.
+        if(s.startedAt!=null && s.count>0){
+          const elapsed=s.durationMs??Math.max(0,Date.now()-s.startedAt);
+          if(elapsed>0)parts.push((s.count*1000/elapsed).toFixed(1)+" avg numbers/s");
         }
-        // This is integer output speed, not token throughput (TPS).
         metrics.textContent=parts.join(" · ");
         row.append(metrics);
       }
