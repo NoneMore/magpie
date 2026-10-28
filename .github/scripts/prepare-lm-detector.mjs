@@ -2,7 +2,7 @@
 // not need Node, npm, or a network connection to run the bundled plugin.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFile, copyFile, mkdir, stat, cp, rm } from "node:fs/promises";
+import { readFile, copyFile, mkdir, stat, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -39,10 +39,10 @@ for (const name of ["unified_bank.json", "shared_detector.bin"]) {
 const embedded = path.join(root, "internal", "plugin", "bundled-lm-detector", "runtime");
 await rm(embedded, {recursive: true, force: true});
 await mkdir(embedded, {recursive: true});
-for (const file of ["index.js", "package.json"]) {
-  await copyFile(path.join(plugin, file), path.join(embedded, file));
+// The native binary must not embed the superseded Bun executor, Page or
+// vendored TypeScript algorithms. Keep them only as source-level regression tests.
+await mkdir(path.join(embedded, "data"), {recursive: true});
+for (const name of ["unified_bank.json", "shared_detector.bin"]) {
+  await copyFile(path.join(dest, name), path.join(embedded, "data", name));
 }
-for (const directory of ["page", "shared", "data"]) {
-  await cp(path.join(plugin, directory), path.join(embedded, directory), {recursive: true});
-}
-console.log("Prepared offline LM Detector Go embed payload.");
+console.log("Prepared data-only offline LM Detector Go embed payload.");
