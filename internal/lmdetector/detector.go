@@ -72,6 +72,7 @@ type Job struct {
 	Samples    []Sample        `json:"samples"`
 	Analysis   *lmfpd.Analysis `json:"analysis"`
 	Error      string          `json:"error,omitempty"`
+	gatewayKey string // Never serialized; redact echoed credentials in public errors.
 	cancel     context.CancelFunc
 }
 
@@ -308,16 +309,36 @@ func publicAnalysis(a *lmfpd.Analysis) *lmfpd.Analysis {
 	return &out
 }
 
+// Upstream 2xx JSON/SSE errors may echo the credential despite using a
+// separate loopback token in the SDK. Scrub only public copies, not job state.
+func redactGatewayError(message, key string) string {
+	if key == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, key, "[REDACTED]")
+}
+
 func snapshot(j *Job) Job {
 	out := *j
 	out.cancel = nil
+	out.gatewayKey = ""
+	out.Error = redactGatewayError(out.Error, j.gatewayKey)
 	out.Rounds = make([]Round, len(j.Rounds))
 	for i, r := range j.Rounds {
 		out.Rounds[i] = r
+		out.Rounds[i].Error = redactGatewayError(r.Error, j.gatewayKey)
 		out.Rounds[i].Analysis = publicAnalysis(r.Analysis)
 		out.Rounds[i].Samples = slices.Clone(r.Samples)
+		for n := range out.Rounds[i].Samples {
+			sample := &out.Rounds[i].Samples[n]
+			sample.Error = redactGatewayError(sample.Error, j.gatewayKey)
+		}
 	}
 	out.Samples = slices.Clone(j.Samples)
+	for n := range out.Samples {
+		sample := &out.Samples[n]
+		sample.Error = redactGatewayError(sample.Error, j.gatewayKey)
+	}
 	out.Analysis = publicAnalysis(j.Analysis)
 	return out
 }
@@ -389,7 +410,7 @@ func Start(ctx context.Context, opts Options) (Job, error) {
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	j := &Job{JobID: uid, Options: opts, State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Rounds: []Round{}, Samples: []Sample{}, cancel: cancel}
+		Rounds: []Round{}, Samples: []Sample{}, gatewayKey: key, cancel: cancel}
 	service.jobs[uid] = j
 	service.active++
 	if len(service.jobs) > maxSaved {
