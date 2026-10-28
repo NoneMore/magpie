@@ -39,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -71,7 +70,7 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go test -tags nogui -count=1 -v ./internal/lmdetector ./plugins/lm-detector
-      - name: Test offline bundle registration and upgrades
+      - name: Test offline reference extraction and bundle migration
         env:
           CGO_ENABLED: '0'
           LM_DETECTOR_REQUIRED: '1'
