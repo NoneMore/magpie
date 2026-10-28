@@ -21,7 +21,7 @@ const (
 )
 
 // boundedSamplingGateway is a short-lived, loopback-only adapter for the
-// upstream SDK v0.1.0, whose RequestSample HTTP client is not injectable.
+// upstream SDK v0.2.0, whose sampling HTTP client is not injectable.
 // It enforces reply byte/frame limits before the SDK can buffer untrusted
 // JSON or SSE. The actual Gateway key never travels to the SDK-facing URL.
 // Remove this adapter once the upstream SDK exposes supported bounded IO.
