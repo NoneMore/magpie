@@ -140,6 +140,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.equal(await detector.locator('[data-fpd="samples"]').innerText().then(s => s.includes("First byte")), true);
     assert.equal(operations.started[1].model, "direct/model");
     await detector.locator('[data-fpd="cancel"]').click();
+    await run.waitFor({state:"visible"});
+    await page.waitForFunction(() =>
+      document.querySelector('#view-lm-detector [data-fpd="run"]')?.disabled === false);
 
     // Hold the paid Start response and dispatch two clicks in the same tick.
     // The frontend must synchronously guard both, without server idempotency.
@@ -150,7 +153,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       button.click();
       button.click();
     });
-    await seenStart;
+    await Promise.race([
+      seenStart,
+      new Promise((_, reject) => setTimeout(() => reject(Error("no paid Start was sent")), 8000)),
+    ]);
     assert.equal(await run.isDisabled(), true, "Run locks before the reply");
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(operations.started.length, 3, "double click starts only one paid job");
