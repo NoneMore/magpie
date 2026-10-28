@@ -57,8 +57,9 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: |
-          go mod download github.com/Ikaleio/lm-detector/sdk/go@v0.1.0 github.com/klauspost/compress@v1.18.4
+          go mod download github.com/Ikaleio/lm-detector/sdk/go@v0.2.0 github.com/klauspost/compress@v1.18.4
           go mod verify
+          grep 'github.com/Ikaleio/lm-detector/sdk/go v0.2.0 h1:' go.sum
           unformatted=$(gofmt -l internal/lmdetector/*.go plugins/lm-detector/lm_detector.go internal/cli/bundled_lm_detector.go internal/plugin/bundled.go internal/gui/api.go plugins/all/all.go)
           if [ -n "$unformatted" ]; then printf 'Go files need gofmt:\n%s\n' "$unformatted"; exit 1; fi
       - name: Test native Go SDK adapter on mocked Gateway
