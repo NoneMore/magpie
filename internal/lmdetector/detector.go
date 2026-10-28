@@ -72,7 +72,7 @@ type Job struct {
 	Samples    []Sample        `json:"samples"`
 	Analysis   *lmfpd.Analysis `json:"analysis"`
 	Error      string          `json:"error,omitempty"`
-	gatewayKey string // Never serialized; redact echoed credentials in public errors.
+	gatewayKey string          // Never serialized; redact echoed credentials in public errors.
 	cancel     context.CancelFunc
 }
 
