@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/lm-detector-page-bridge
+      - refactor/lm-detector-upstream-sdk-phase1
     paths:
       - .github/workflows/page-bridge.yml
       - internal/gui/pluginpage.go
