@@ -109,12 +109,7 @@ func Disable() {
 		cancel() // Also stop Start requests still loading models or references.
 	}
 	for _, j := range service.jobs {
-		if j.State == "running" {
-			j.State = "cancelled"
-			finished := time.Now().UTC().Format(time.RFC3339Nano)
-			j.FinishedAt = &finished
-			j.cancel()
-		}
+		cancelRunningJob(j)
 	}
 }
 
@@ -425,6 +420,38 @@ func Start(ctx context.Context, opts Options) (Job, error) {
 	return snapshot(j), nil
 }
 
+// cancelRunningJob is called only under service.mu. The SDK may not send
+// terminal callbacks after its Context is cancelled, so settle public samples
+// immediately while preserving any numbers already received.
+func cancelRunningJob(j *Job) {
+	if j.State != "running" {
+		return
+	}
+	now := time.Now()
+	j.State = "cancelled"
+	finished := now.UTC().Format(time.RFC3339Nano)
+	j.FinishedAt = &finished
+	for i := range j.Samples {
+		sample := &j.Samples[i]
+		if sample.FinishedAt != nil {
+			continue
+		}
+		switch sample.State {
+		case "complete", "truncated", "failed", "cancelled":
+			continue
+		}
+		sample.State = "cancelled"
+		ended := now.UnixMilli()
+		sample.FinishedAt = &ended
+		if sample.StartedAt != nil {
+			duration := max(0, ended-*sample.StartedAt)
+			sample.DurationMs = &duration
+		}
+		j.Completed++
+	}
+	j.cancel()
+}
+
 func Cancel(jobID string) (Job, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -432,12 +459,7 @@ func Cancel(jobID string) (Job, error) {
 	if j == nil {
 		return Job{}, errors.New("fingerprint job not found")
 	}
-	if j.State == "running" {
-		j.State = "cancelled"
-		finished := time.Now().UTC().Format(time.RFC3339Nano)
-		j.FinishedAt = &finished
-		j.cancel()
-	}
+	cancelRunningJob(j)
 	return snapshot(j), nil
 }
 
