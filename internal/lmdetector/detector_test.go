@@ -230,17 +230,16 @@ func TestPublicSnapshotOnlyKeepsTwentyResults(t *testing.T) {
 	}
 }
 
-
 func TestPublicSnapshotRedactsEchoedGatewayCredentials(t *testing.T) {
 	key := "sensitive-gateway-key-123"
 	j := &Job{
-		JobID: "test-public-redaction",
-		State: "failed",
+		JobID:      "test-public-redaction",
+		State:      "failed",
 		gatewayKey: key,
-		Error: "Gateway error: " + key,
-		Samples: []Sample{{State: "failed", Error: "SSE type:error echoed " + key}},
+		Error:      "Gateway error: " + key,
+		Samples:    []Sample{{State: "failed", Error: "SSE type:error echoed " + key}},
 		Rounds: []Round{{
-			Error: "JSON error.message echoed " + key,
+			Error:   "JSON error.message echoed " + key,
 			Samples: []Sample{{State: "failed", Error: "round sample " + key}},
 		}},
 	}
@@ -279,10 +278,10 @@ func TestCancellationSettlesOutstandingSamples(t *testing.T) {
 			finished := started + 200
 			cancelledContext := false
 			j := &Job{
-				JobID: "test-samples-" + mode,
-				State: "running",
+				JobID:     "test-samples-" + mode,
+				State:     "running",
 				Completed: 1,
-				cancel: func() { cancelledContext = true },
+				cancel:    func() { cancelledContext = true },
 				Samples: []Sample{
 					{Index: 1, State: "queued", Count: 0},
 					{Index: 2, State: "waiting", StartedAt: &started, Count: 0},
