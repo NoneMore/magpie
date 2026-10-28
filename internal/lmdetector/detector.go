@@ -49,6 +49,7 @@ type Sample struct {
 	StartedAt             *int64 `json:"startedAt"`
 	FinishedAt            *int64 `json:"finishedAt"`
 	DurationMs            *int64 `json:"durationMs"`
+	FirstByteMs           *int64 `json:"firstByteMs"`
 	Error                 string `json:"error,omitempty"`
 }
 
@@ -419,6 +420,8 @@ func Cancel(jobID string) (Job, error) {
 	return snapshot(j), nil
 }
 
+// execute keeps Magpie's bounded, authenticated loopback transport while using
+// the upstream SDK for challenge generation, sampling, progress and scoring.
 func execute(ctx context.Context, j *Job, d *lmfpd.Detector, cfg lmfpd.DetectConfig) {
 	defer func() {
 		j.cancel()
@@ -448,115 +451,84 @@ func execute(ctx context.Context, j *Job, d *lmfpd.Detector, cfg lmfpd.DetectCon
 		if ctx.Err() != nil {
 			return
 		}
-		challenges, err := lmfpd.GenerateChallenges(j.Count)
-		if err != nil {
-			fail(err)
-			return
-		}
-		samples := make([]Sample, len(challenges))
-		for i, c := range challenges {
-			samples[i] = Sample{Index: i + 1, State: "queued", ExpectedCount: c.ExpectedCount}
-		}
 		service.mu.Lock()
 		if j.State != "running" {
 			service.mu.Unlock()
 			return
 		}
 		j.Round = round
-		j.Samples = samples
-		service.mu.Unlock()
-		result := make([]lmfpd.Sample, len(challenges))
-		var wg sync.WaitGroup
-		var next int
-		var mu sync.Mutex
-		for worker := 0; worker < j.Parallel; worker++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					mu.Lock()
-					index := next
-					next++
-					mu.Unlock()
-					if index >= len(challenges) || ctx.Err() != nil {
-						return
-					}
-					start := time.Now()
-					ms := start.UnixMilli()
-					service.mu.Lock()
-					if j.State != "running" {
-						service.mu.Unlock()
-						return
-					}
-					j.Samples[index].State = "waiting"
-					j.Samples[index].StartedAt = &ms
-					service.mu.Unlock()
-					// Bound the full stream lifetime, not just time to first SSE byte.
-					sampleCtx, sampleCancel := context.WithTimeout(ctx, cfg.Timeout)
-					sample := lmfpd.RequestSample(sampleCtx, cfg, challenges[index])
-					sampleCancel()
-					finish := time.Now().UnixMilli()
-					duration := time.Since(start).Milliseconds()
-					numbers := lmfpd.ParseNumbers(sample.Text)
-					var minimum *int
-					if len(numbers) > 0 {
-						n := slices.Min(numbers)
-						minimum = &n
-					}
-					service.mu.Lock()
-					result[index] = sample
-					if j.State == "running" {
-						s := &j.Samples[index]
-						s.State = sample.State
-						s.Count = sample.Count
-						s.MinimumValidNumber = minimum
-						s.AnomalousDistribution = minimum != nil && *minimum >= 200
-						s.FinishedAt = &finish
-						s.DurationMs = &duration
-						if sample.Error != nil {
-							s.Error = *sample.Error
-						}
-						j.Completed++
-					}
-					service.mu.Unlock()
-				}
-			}()
+		j.Samples = make([]Sample, j.Count)
+		for i := range j.Samples {
+			j.Samples[i] = Sample{Index: i + 1, State: "queued"}
 		}
-		wg.Wait()
+		service.mu.Unlock()
+
+		// The SDK's timeout guards time to first byte; this additional
+		// deadline bounds the whole stream, including slow event dribbles.
+		// Serial batches need one timeout budget for each batch.
+		batches := (j.Count + j.Parallel - 1) / j.Parallel
+		roundCtx, cancelRound := context.WithTimeout(ctx, time.Duration(batches)*cfg.Timeout)
+		result, detectErr := d.Detect(roundCtx, cfg, lmfpd.OnSample(func(index int, sample lmfpd.Sample) {
+			now := time.Now().UnixMilli()
+			service.mu.Lock()
+			defer service.mu.Unlock()
+			if j.State != "running" || j.Round != round || index < 0 || index >= len(j.Samples) {
+				return
+			}
+			s := &j.Samples[index]
+			if sample.State == "waiting" && s.StartedAt == nil {
+				started := now
+				s.StartedAt = &started
+			}
+			s.State = sample.State
+			s.Count = sample.Count
+			s.ExpectedCount = sample.ExpectedCount
+			s.FirstByteMs = sample.FirstByteMs
+			if sample.Error != nil {
+				s.Error = *sample.Error
+			}
+			switch sample.State {
+			case "complete", "truncated", "failed", "cancelled":
+				if s.FinishedAt != nil {
+					return
+				}
+				s.FinishedAt = &now
+				if s.StartedAt != nil {
+					elapsed := now - *s.StartedAt
+					s.DurationMs = &elapsed
+				}
+				numbers := lmfpd.ParseNumbers(sample.Text)
+				if len(numbers) > 0 {
+					minimum := slices.Min(numbers)
+					s.MinimumValidNumber = &minimum
+					s.AnomalousDistribution = minimum >= 200
+				}
+				j.Completed++
+			}
+		}))
+		cancelRound()
 		if ctx.Err() != nil {
 			return
 		}
-		outputs := make([]lmfpd.Output, len(challenges))
-		accepted := 0
-		for i, s := range result {
-			outputs[i].ExpectedCount = challenges[i].ExpectedCount
-			if s.State == "complete" || s.State == "truncated" {
-				outputs[i].Text = s.Text
-				accepted++
-			}
+		if detectErr != nil {
+			fail(detectErr)
+			return
 		}
-		var analysis *lmfpd.Analysis
-		var why string
-		if accepted == 0 || j.Strict && accepted != 3 {
-			why = "No valid samples. This round cannot be scored."
-			if j.Strict {
-				why = fmt.Sprintf("Strict mode needs 3/3 successful samples, got %d/3", accepted)
-			}
-		} else {
-			analysis, err = d.Analyze(outputs, j.Strict)
-			if err != nil {
-				why = err.Error()
-			} else if len(analysis.Results) == 0 {
-				why = analysis.Evidence.Reason
-			}
+		if result == nil {
+			fail(errors.New("SDK returned no detection result"))
+			return
+		}
+		why := ""
+		if result.Error != nil {
+			why = *result.Error
 		}
 		service.mu.Lock()
 		if j.State != "running" {
 			service.mu.Unlock()
 			return
 		}
-		j.Analysis = analysis
-		j.Rounds = append(j.Rounds, Round{Round: round, Samples: slices.Clone(j.Samples), Analysis: analysis, Error: why})
+		j.Analysis = result.Analysis
+		j.Rounds = append(j.Rounds, Round{Round: round, Samples: slices.Clone(j.Samples), Analysis: result.Analysis, Error: why})
 		service.mu.Unlock()
 	}
 	service.mu.Lock()
