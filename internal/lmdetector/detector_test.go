@@ -376,3 +376,67 @@ func TestBoundedSamplingProxyRejectsMissingSecret(t *testing.T) {
 		t.Fatalf("missing proxy bearer token returned %d", resp.StatusCode)
 	}
 }
+
+func TestNativeSSELiveProgress(t *testing.T) {
+	first := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"id": "mock/model"}}})
+			return
+		}
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{
+			"type": "response.output_text.delta", "delta": strings.Repeat("199, ", 100),
+		}))
+		w.(http.Flusher).Flush()
+		close(first)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{
+			"type": "response.output_text.delta", "delta": strings.Repeat("199, ", 250),
+		}))
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
+	}))
+	defer mock.Close()
+	t.Setenv("MAGPIE_FPD_GATEWAY_URL", mock.URL+"/v1")
+	t.Setenv("MAGPIE_FPD_GATEWAY_KEY", "test-key")
+	Enable()
+	defer Disable()
+	start, err := Start(context.Background(), Options{Model: "mock/model", Stream: true, Count: 1, Parallel: 1, Repeat: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no first SSE frame")
+	}
+	var progress Job
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		progress, err = Status(start.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(progress.Samples) == 1 && progress.Samples[0].Count >= 100 && progress.Samples[0].FirstByteMs != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(progress.Samples) != 1 || progress.Samples[0].Count < 100 ||
+		progress.Samples[0].FirstByteMs == nil || progress.Completed != 0 ||
+		progress.Samples[0].State != "streaming" {
+		t.Fatalf("streaming counts and first byte must be visible before completion: %+v", progress)
+	}
+	// Cancelling the blocked upstream reader should release the final request.
+	Cancel(start.JobID)
+}
