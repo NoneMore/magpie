@@ -230,6 +230,100 @@ func TestPublicSnapshotOnlyKeepsTwentyResults(t *testing.T) {
 	}
 }
 
+
+func TestPublicSnapshotRedactsEchoedGatewayCredentials(t *testing.T) {
+	key := "sensitive-gateway-key-123"
+	j := &Job{
+		JobID: "test-public-redaction",
+		State: "failed",
+		gatewayKey: key,
+		Error: "Gateway error: " + key,
+		Samples: []Sample{{State: "failed", Error: "SSE type:error echoed " + key}},
+		Rounds: []Round{{
+			Error: "JSON error.message echoed " + key,
+			Samples: []Sample{{State: "failed", Error: "round sample " + key}},
+		}},
+	}
+	service.mu.Lock()
+	service.jobs[j.JobID] = j
+	service.mu.Unlock()
+	defer func() {
+		service.mu.Lock()
+		delete(service.jobs, j.JobID)
+		service.mu.Unlock()
+	}()
+	out, err := Status(j.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(public), key) {
+		t.Fatalf("public status exposed real Gateway key: %s", public)
+	}
+	if strings.Count(string(public), "[REDACTED]") != 4 {
+		t.Fatalf("expected redaction on Job, Round and both Sample errors: %s", public)
+	}
+	if !strings.Contains(j.Samples[0].Error, key) || !strings.Contains(j.Rounds[0].Samples[0].Error, key) {
+		t.Fatal("public redaction modified the internal job")
+	}
+}
+
+func TestCancellationSettlesOutstandingSamples(t *testing.T) {
+	for _, mode := range []string{"cancel", "disable"} {
+		t.Run(mode, func(t *testing.T) {
+			Enable()
+			started := time.Now().Add(-time.Second).UnixMilli()
+			finished := started + 200
+			cancelledContext := false
+			j := &Job{
+				JobID: "test-samples-" + mode,
+				State: "running",
+				Completed: 1,
+				cancel: func() { cancelledContext = true },
+				Samples: []Sample{
+					{Index: 1, State: "queued", Count: 0},
+					{Index: 2, State: "waiting", StartedAt: &started, Count: 0},
+					{Index: 3, State: "streaming", StartedAt: &started, Count: 17},
+					{Index: 4, State: "complete", StartedAt: &started, FinishedAt: &finished, Count: 300},
+				},
+			}
+			service.mu.Lock()
+			service.jobs[j.JobID] = j
+			service.mu.Unlock()
+			defer func() {
+				service.mu.Lock()
+				delete(service.jobs, j.JobID)
+				service.mu.Unlock()
+			}()
+			if mode == "cancel" {
+				if _, err := Cancel(j.JobID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				Disable()
+			}
+			out, err := Status(j.JobID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.State != "cancelled" || out.Completed != 4 || out.FinishedAt == nil || !cancelledContext {
+				t.Fatalf("job did not settle on cancellation: %+v", out)
+			}
+			for i, sample := range out.Samples {
+				if sample.FinishedAt == nil || (i < 3 && sample.State != "cancelled") {
+					t.Fatalf("sample %d never settled: %+v", i, sample)
+				}
+			}
+			if out.Samples[2].Count != 17 || out.Samples[2].DurationMs == nil || out.Samples[3].State != "complete" {
+				t.Fatalf("cancel lost prior progress or complete status: %+v", out.Samples)
+			}
+		})
+	}
+}
+
 func TestDisableEnableCannotRevivePendingStart(t *testing.T) {
 	entered := make(chan struct{})
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
