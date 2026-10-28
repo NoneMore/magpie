@@ -53,6 +53,8 @@ function handler(operations) {
     if (url.pathname === "/api/lm-detector/start") {
       const payload = req.postDataJSON();
       operations.started.push(payload);
+      operations.onStart?.();
+      if (operations.startGate) await operations.startGate;
       const jobId = "job-" + operations.started.length;
       return json({jobId, model: payload.model, state: "running",
         round: 1, repeat: payload.repeat, count: payload.count, completed: 0,
@@ -61,12 +63,12 @@ function handler(operations) {
     if (url.pathname === "/api/lm-detector/status") {
       const jobId = req.postDataJSON().jobId;
       if (jobId === "job-1") return json({
-        jobId, state: "done", round: 2, repeat: 2, count: 1, completed: 2,
+        jobId, state: "done", stream: true, round: 2, repeat: 2, count: 1, completed: 2,
         samples: [{index: 1, state: "complete", count: 300, expectedCount: 300,
           firstByteMs: 120, durationMs: 2500, startedAt: Date.now()-2500}],
         rounds: [round(1, "Earlier model"), round(2, "Later model")],
       });
-      return json({jobId, state: "running", round: 1, repeat: 2,
+      return json({jobId, state: "running", stream: true, round: 1, repeat: 2,
         count: 1, completed: 0, rounds: [],
         samples: [{index: 1, state: "streaming", count: 100,
           expectedCount: 300, firstByteMs: 100, startedAt: Date.now()-2500}]});
@@ -135,9 +137,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.waitForFunction(() => document.querySelector('#view-lm-detector [data-fpd="samples"]')?.textContent.includes("streaming"));
     assert.equal(await detector.locator('[data-fpd="winner"]').innerText(), "", "new job clears old verdict");
     assert.equal(await detector.locator('[data-fpd="results"] .fpd-result').count(), 0);
-    assert.equal(await detector.locator('[data-fpd="samples"]').innerText().then(s => s.includes("TTFT")), true);
+    assert.equal(await detector.locator('[data-fpd="samples"]').innerText().then(s => s.includes("First byte")), true);
     assert.equal(operations.started[1].model, "direct/model");
     await detector.locator('[data-fpd="cancel"]').click();
+
+    // Hold the paid Start response and dispatch two clicks in the same tick.
+    // The frontend must synchronously guard both, without server idempotency.
+    const seenStart = new Promise(resolve => { operations.onStart = resolve; });
+    operations.startGate = new Promise(resolve => { operations.releaseStart = resolve; });
+    await page.evaluate(() => {
+      const button = document.querySelector('#view-lm-detector [data-fpd="run"]');
+      button.click();
+      button.click();
+    });
+    await seenStart;
+    assert.equal(await run.isDisabled(), true, "Run locks before the reply");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(operations.started.length, 3, "double click starts only one paid job");
+    operations.releaseStart();
+    operations.startGate = null;
     assert.deepEqual(errors, [], "no uncaught browser errors");
   });
 }
