@@ -1,5 +1,6 @@
 // Build-time-only fetch. Release EXEs embed the two assets: end users do
 // not need Node, npm, or a network connection to run the bundled plugin.
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFile, copyFile, mkdir, stat, cp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -20,6 +21,8 @@ for (const name of ["unified_bank.json", "shared_detector.bin"]) {
   const from = path.join(source, "data", name);
   const size = (await stat(from)).size;
   if (size < 1024 * 1024) throw Error("lmfpd reference asset is unexpectedly small: " + name);
+  const digest = createHash("sha256").update(await readFile(from)).digest("hex");
+  console.log("Reference SHA256 " + name + ": " + digest);
   await copyFile(from, path.join(dest, name));
   console.log("Bundled " + name + " (" + size + " bytes) from lmfpd@" + version);
 }
